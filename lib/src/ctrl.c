@@ -881,7 +881,8 @@ static void ctrl_message_received_displaya(ChiakiCtrl *ctrl, uint8_t *payload, s
 	{
 		ctrl->cant_displaya = false;
 		CHIAKI_LOGI(ctrl->session->log, "Ctrl received message that the stream can now display.");
-		ctrl->session->display_sink.cantdisplay_cb(ctrl->session->display_sink.user, false);
+		if(ctrl->session->display_sink.cantdisplay_cb)
+			ctrl->session->display_sink.cantdisplay_cb(ctrl->session->display_sink.user, false);
 	}
 }
 
@@ -891,7 +892,8 @@ static void ctrl_message_received_displayb(ChiakiCtrl *ctrl, uint8_t *payload, s
 	{
 		if(!(payload[0] == 0x01 && payload[1] == 0xff) && !ctrl->cant_displayb)
 		{
-			ctrl->session->display_sink.cantdisplay_cb(ctrl->session->display_sink.user, true);
+			if(ctrl->session->display_sink.cantdisplay_cb)
+				ctrl->session->display_sink.cantdisplay_cb(ctrl->session->display_sink.user, true);
 			CHIAKI_LOGI(ctrl->session->log, "Ctrl received message that the stream can't display due to displaying some content that can't be streamed.");
 			ctrl->cant_displayb = true;
 		}
@@ -1403,7 +1405,8 @@ static ChiakiErrorCode ctrl_connect(ChiakiCtrl *ctrl)
 		CHIAKI_LOGE(session->log, "No valid Server Type in ctrl response");
 
 	if(response.rp_prohibit)
-		ctrl->session->display_sink.cantdisplay_cb(ctrl->session->display_sink.user, true);
+		if(ctrl->session->display_sink.cantdisplay_cb)
+			ctrl->session->display_sink.cantdisplay_cb(ctrl->session->display_sink.user, true);
 
 	// if we already got more data than the header, put the rest in the buffer.
 	ctrl->recv_buf_size = received_size - header_size;

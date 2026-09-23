@@ -11,6 +11,9 @@
 typedef struct AMediaCodec AMediaCodec;
 typedef struct ANativeWindow ANativeWindow;
 
+// Frames in flight in the decoder that the latency statistics can keep track of
+#define ANDROID_CHIAKI_VIDEO_DECODER_LATENCY_SLOTS 64
+
 typedef struct android_chiaki_video_decoder_t {
   ChiakiLog *log;
   ChiakiMutex codec_mutex;
@@ -22,6 +25,13 @@ typedef struct android_chiaki_video_decoder_t {
   int32_t target_width;
   int32_t target_height;
   ChiakiCodec target_codec;
+
+  // When each input was queued, by timestamp, for measuring how long the
+  // decoder takes
+  uint64_t queued_us[ANDROID_CHIAKI_VIDEO_DECODER_LATENCY_SLOTS];
+  uint64_t latency_sum_us;
+  uint64_t latency_max_us;
+  uint32_t latency_count;
 } AndroidChiakiVideoDecoder;
 
 ChiakiErrorCode

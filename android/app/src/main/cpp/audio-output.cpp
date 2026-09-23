@@ -34,9 +34,44 @@ struct AudioOutput
 	oboe::ManagedStream stream;
 	AudioOutputCallback stream_callback;
 	AudioBuffer buf;
+	uint32_t channels = 0;
+	uint32_t rate = 0;
+	// AAudio streams get disconnected over and over on some devices (e.g. Rockchip TV boxes
+	// that play on HDMI and the speaker at once), OpenSL ES goes through AudioTrack, which copes
+	bool use_opensl = false;
 
 	AudioOutput() : stream_callback(this) {}
 };
+
+static void open_stream(AudioOutput *ao)
+{
+	oboe::AudioStreamBuilder builder;
+	// Shared: exclusive streams are refused or dropped by some HDMI outputs, e.g. on TV boxes
+	builder.setPerformanceMode(oboe::PerformanceMode::LowLatency)
+		->setSharingMode(oboe::SharingMode::Shared)
+		->setUsage(oboe::Usage::Game)
+		->setFormat(oboe::AudioFormat::I16)
+		->setChannelCount(ao->channels)
+		->setSampleRate(ao->rate)
+		->setCallback(&ao->stream_callback);
+	if(ao->use_opensl)
+		builder.setAudioApi(oboe::AudioApi::OpenSLES);
+
+	auto result = builder.openManagedStream(ao->stream);
+	if(result == oboe::Result::OK)
+		CHIAKI_LOGI(ao->log, "Audio Output opened Oboe stream");
+	else
+	{
+		CHIAKI_LOGE(ao->log, "Audio Output failed to open Oboe stream: %s", oboe::convertToText(result));
+		return;
+	}
+
+	result = ao->stream->start();
+	if(result == oboe::Result::OK)
+		CHIAKI_LOGI(ao->log, "Audio Output started Oboe stream");
+	else
+		CHIAKI_LOGE(ao->log, "Audio Output failed to start Oboe stream: %s", oboe::convertToText(result));
+}
 
 extern "C" void *android_chiaki_audio_output_new(ChiakiLog *log)
 {
@@ -57,26 +92,9 @@ extern "C" void android_chiaki_audio_output_free(void *audio_output)
 extern "C" void android_chiaki_audio_output_settings(uint32_t channels, uint32_t rate, void *audio_output)
 {
 	auto ao = reinterpret_cast<AudioOutput *>(audio_output);
-
-	oboe::AudioStreamBuilder builder;
-	builder.setPerformanceMode(oboe::PerformanceMode::LowLatency)
-		->setSharingMode(oboe::SharingMode::Exclusive)
-		->setFormat(oboe::AudioFormat::I16)
-		->setChannelCount(channels)
-		->setSampleRate(rate)
-		->setCallback(&ao->stream_callback);
-
-	auto result = builder.openManagedStream(ao->stream);
-	if(result == oboe::Result::OK)
-		CHIAKI_LOGI(ao->log, "Audio Output opened Oboe stream");
-	else
-		CHIAKI_LOGE(ao->log, "Audio Output failed to open Oboe stream: %s", oboe::convertToText(result));
-
-	result = ao->stream->start();
-	if(result == oboe::Result::OK)
-		CHIAKI_LOGI(ao->log, "Audio Output started Oboe stream");
-	else
-		CHIAKI_LOGE(ao->log, "Audio Output failed to start Oboe stream: %s", oboe::convertToText(result));
+	ao->channels = channels;
+	ao->rate = rate;
+	open_stream(ao);
 }
 
 extern "C" void android_chiaki_audio_output_frame(int16_t *buf, size_t samples_count, void *audio_output)
@@ -121,4 +139,12 @@ void AudioOutputCallback::onErrorBeforeClose(oboe::AudioStream *stream, oboe::Re
 void AudioOutputCallback::onErrorAfterClose(oboe::AudioStream *stream, oboe::Result error)
 {
 	CHIAKI_LOGE(audio_output->log, "Oboe reported error after close: %s", oboe::convertToText(error));
+	// The output device changed (e.g. HDMI audio was rerouted), which closes the stream.
+	// Oboe calls this on its own thread, where opening a new stream is allowed.
+	if(error == oboe::Result::ErrorDisconnected)
+	{
+		CHIAKI_LOGI(audio_output->log, "Audio Output reopening Oboe stream with OpenSL ES after disconnect");
+		audio_output->use_opensl = true;
+		open_stream(audio_output);
+	}
 }

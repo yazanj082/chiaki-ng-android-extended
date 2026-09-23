@@ -415,7 +415,8 @@ class DebandRenderer(
         val shader = GLES30.glCreateShader(type)
         if (shader == 0) return 0
 
-        GLES30.glShaderSource(shader, source)
+        // #version must be the very first thing in the source for strict compilers like Mali's
+        GLES30.glShaderSource(shader, source.trimStart())
         GLES30.glCompileShader(shader)
 
         val compileStatus = IntArray(1)
