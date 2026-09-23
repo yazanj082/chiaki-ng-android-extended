@@ -167,6 +167,11 @@ class Preferences(context: Context)
 		get() = getMapping("ps", 110)
 		set(value) = setMapping("ps", value)
 
+	// Default is the Share button of Xbox Series controllers (KEYCODE_MEDIA_RECORD)
+	var mappingTouchpad: Int
+		get() = getMapping("touchpad", 130)
+		set(value) = setMapping("touchpad", value)
+
 	val sharpnessIntensityKey get() = "preferences_sharpness_intensity"
 	var sharpnessIntensity: Float
 		get() = sharedPreferences.getInt(sharpnessIntensityKey, 0).toFloat() / 100f

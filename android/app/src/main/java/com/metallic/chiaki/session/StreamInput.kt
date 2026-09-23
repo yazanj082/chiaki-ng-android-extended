@@ -14,6 +14,12 @@ class StreamInput(val context: Context, val preferences: Preferences)
 {
 	var controllerStateChangedCallback: ((ControllerState) -> Unit)? = null
 
+	/**
+	 * Id of the physical controller that most recently sent input, so rumble can be sent back to it.
+	 */
+	var lastControllerDeviceId: Int? = null
+		private set
+
 	val controllerState: ControllerState get()
 	{
 		val controllerState = sensorControllerState or keyControllerState or motionControllerState
@@ -40,6 +46,9 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		if(motionControllerState.r2State > 0U)
 			controllerState.r2State = motionControllerState.r2State
 
+		if(swapCrossMoon)
+			controllerState.buttons = swapFaceButtons(controllerState.buttons)
+
 		return controllerState or touchControllerState
 	}
 
@@ -54,6 +63,32 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		}
 
 	private val swapCrossMoon = preferences.swapCrossMoon
+
+	// Mappings are read once per session instead of from SharedPreferences on every key event
+	private val mappingL2 = preferences.mappingL2
+	private val mappingR2 = preferences.mappingR2
+	private val buttonMappings: Map<Int, UInt> = linkedMapOf(
+		preferences.mappingCross to ControllerState.BUTTON_CROSS,
+		preferences.mappingCircle to ControllerState.BUTTON_MOON,
+		preferences.mappingSquare to ControllerState.BUTTON_BOX,
+		preferences.mappingTriangle to ControllerState.BUTTON_PYRAMID,
+		preferences.mappingL1 to ControllerState.BUTTON_L1,
+		preferences.mappingR1 to ControllerState.BUTTON_R1,
+		preferences.mappingL3 to ControllerState.BUTTON_L3,
+		preferences.mappingR3 to ControllerState.BUTTON_R3,
+		preferences.mappingShare to ControllerState.BUTTON_SHARE,
+		preferences.mappingOptions to ControllerState.BUTTON_OPTIONS,
+		preferences.mappingPs to ControllerState.BUTTON_PS,
+		preferences.mappingTouchpad to ControllerState.BUTTON_TOUCHPAD
+	).filterKeys { it != 0 }.let { mappings ->
+		// Controllers that report the D-pad as keys instead of a hat axis
+		mapOf(
+			KeyEvent.KEYCODE_DPAD_UP to ControllerState.BUTTON_DPAD_UP,
+			KeyEvent.KEYCODE_DPAD_DOWN to ControllerState.BUTTON_DPAD_DOWN,
+			KeyEvent.KEYCODE_DPAD_LEFT to ControllerState.BUTTON_DPAD_LEFT,
+			KeyEvent.KEYCODE_DPAD_RIGHT to ControllerState.BUTTON_DPAD_RIGHT
+		) + mappings
+	}
 
 	private val sensorEventListener = object: SensorEventListener {
 		override fun onSensorChanged(event: SensorEvent)
@@ -120,6 +155,14 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		controllerStateChangedCallback?.let { it(controllerState) }
 	}
 
+	private fun rememberController(event: InputEvent)
+	{
+		val source = event.source
+		if(source and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD
+			|| source and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
+			lastControllerDeviceId = event.deviceId
+	}
+
 	fun dispatchKeyEvent(event: KeyEvent): Boolean
 	{
 		//Log.i("StreamSession", "key event $event")
@@ -130,53 +173,104 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		val action = event.action == KeyEvent.ACTION_DOWN
 
 		// Check for L2/R2 (can be digital or analog, here we handle digital key event)
-		if (keyCode == preferences.mappingL2) {
+		if (keyCode == mappingL2) {
 			keyControllerState.l2State = if(action) UByte.MAX_VALUE else 0U
+			rememberController(event)
 			controllerStateUpdated()
 			return true
 		}
-		if (keyCode == preferences.mappingR2) {
+		if (keyCode == mappingR2) {
 			keyControllerState.r2State = if(action) UByte.MAX_VALUE else 0U
+			rememberController(event)
 			controllerStateUpdated()
 			return true
 		}
 
-		val buttonMask: UInt = when(keyCode)
-		{
-			preferences.mappingCross -> ControllerState.BUTTON_CROSS
-			preferences.mappingCircle -> ControllerState.BUTTON_MOON
-			preferences.mappingSquare -> ControllerState.BUTTON_BOX
-			preferences.mappingTriangle -> ControllerState.BUTTON_PYRAMID
-			preferences.mappingL1 -> ControllerState.BUTTON_L1
-			preferences.mappingR1 -> ControllerState.BUTTON_R1
-			preferences.mappingL3 -> ControllerState.BUTTON_L3
-			preferences.mappingR3 -> ControllerState.BUTTON_R3
-			preferences.mappingShare -> ControllerState.BUTTON_SHARE
-			preferences.mappingOptions -> ControllerState.BUTTON_OPTIONS
-			preferences.mappingPs -> ControllerState.BUTTON_PS
-			else -> return false
-		}
+		val buttonMask = buttonMappings[keyCode] ?: return false
 
 		keyControllerState.buttons = keyControllerState.buttons.run {
 			if(action) this or buttonMask else this and buttonMask.inv()
 		}
 
+		rememberController(event)
 		controllerStateUpdated()
 		return true
+	}
+
+	/**
+	 * Which axes a controller uses for the right stick and the triggers.
+	 * Android does not report these consistently, e.g. Xbox controllers over Bluetooth
+	 * send their triggers as AXIS_BRAKE/AXIS_GAS instead of AXIS_LTRIGGER/AXIS_RTRIGGER.
+	 */
+	private class AxisLayout(
+		val rightX: Int,
+		val rightY: Int,
+		val leftTriggers: IntArray,
+		val rightTriggers: IntArray
+	)
+
+	private val axisLayouts = mutableMapOf<Int, AxisLayout>()
+
+	private fun axisLayout(device: InputDevice?): AxisLayout
+	{
+		if(device == null)
+			return defaultAxisLayout
+		return axisLayouts.getOrPut(device.id) {
+			fun has(axis: Int) = device.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK) != null
+			val hasZ = has(MotionEvent.AXIS_Z) && has(MotionEvent.AXIS_RZ)
+			val hasRxRy = has(MotionEvent.AXIS_RX) && has(MotionEvent.AXIS_RY)
+			val hasTriggerAxes = (has(MotionEvent.AXIS_LTRIGGER) && has(MotionEvent.AXIS_RTRIGGER))
+					|| (has(MotionEvent.AXIS_BRAKE) && has(MotionEvent.AXIS_GAS))
+			when
+			{
+				// No dedicated trigger axes: one of Z/RZ or RX/RY is the right stick, the other the triggers
+				!hasTriggerAxes && hasZ && hasRxRy ->
+					if(device.vendorId == VENDOR_ID_SONY)
+						AxisLayout(MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ, intArrayOf(MotionEvent.AXIS_RX), intArrayOf(MotionEvent.AXIS_RY))
+					else
+						AxisLayout(MotionEvent.AXIS_RX, MotionEvent.AXIS_RY, intArrayOf(MotionEvent.AXIS_Z), intArrayOf(MotionEvent.AXIS_RZ))
+				!hasZ && hasRxRy ->
+					AxisLayout(MotionEvent.AXIS_RX, MotionEvent.AXIS_RY, defaultAxisLayout.leftTriggers, defaultAxisLayout.rightTriggers)
+				else -> defaultAxisLayout
+			}
+		}
+	}
+
+	/**
+	 * Drops cached information about a controller that was disconnected or reconfigured.
+	 */
+	fun forgetInputDevice(deviceId: Int)
+	{
+		axisLayouts.remove(deviceId)
+		if(lastControllerDeviceId == deviceId)
+			lastControllerDeviceId = null
 	}
 
 	fun onGenericMotionEvent(event: MotionEvent): Boolean
 	{
 		if(event.source and InputDevice.SOURCE_CLASS_JOYSTICK != InputDevice.SOURCE_CLASS_JOYSTICK)
 			return false
-		fun Float.signedAxis() = (this * Short.MAX_VALUE).toInt().toShort()
-		fun Float.unsignedAxis() = (this * UByte.MAX_VALUE.toFloat()).toUInt().toUByte()
+		fun Float.signedAxis() = (this.coerceIn(-1.0f, 1.0f) * Short.MAX_VALUE).toInt().toShort()
+		fun Float.unsignedAxis() = (this.coerceIn(0.0f, 1.0f) * UByte.MAX_VALUE.toFloat()).toUInt().toUByte()
+
+		val device = event.device
+		val layout = axisLayout(device)
+		// Normalizes to 0..1 using the axis' reported range, since some triggers rest at -1 instead of 0
+		fun triggerValue(axes: IntArray) = axes.maxOf { axis ->
+			val value = event.getAxisValue(axis)
+			val range = device?.getMotionRange(axis, event.source)
+			if(range != null && range.min < 0.0f && range.range > 0.0f)
+				(value - range.min) / range.range
+			else
+				value
+		}
+
 		motionControllerState.leftX = event.getAxisValue(MotionEvent.AXIS_X).signedAxis()
 		motionControllerState.leftY = event.getAxisValue(MotionEvent.AXIS_Y).signedAxis()
-		motionControllerState.rightX = event.getAxisValue(MotionEvent.AXIS_Z).signedAxis()
-		motionControllerState.rightY = event.getAxisValue(MotionEvent.AXIS_RZ).signedAxis()
-		motionControllerState.l2State = event.getAxisValue(MotionEvent.AXIS_LTRIGGER).unsignedAxis()
-		motionControllerState.r2State = event.getAxisValue(MotionEvent.AXIS_RTRIGGER).unsignedAxis()
+		motionControllerState.rightX = event.getAxisValue(layout.rightX).signedAxis()
+		motionControllerState.rightY = event.getAxisValue(layout.rightY).signedAxis()
+		motionControllerState.l2State = triggerValue(layout.leftTriggers).unsignedAxis()
+		motionControllerState.r2State = triggerValue(layout.rightTriggers).unsignedAxis()
 		motionControllerState.buttons = motionControllerState.buttons.let {
 			val dpadX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
 			val dpadY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
@@ -192,7 +286,34 @@ class StreamInput(val context: Context, val preferences: Preferences)
 					dpadButtons
 		}
 		//Log.i("StreamSession", "motionEvent => $motionControllerState")
+		rememberController(event)
 		controllerStateUpdated()
 		return true
+	}
+
+	companion object
+	{
+		private const val VENDOR_ID_SONY = 0x054c
+
+		private val defaultAxisLayout = AxisLayout(
+			MotionEvent.AXIS_Z,
+			MotionEvent.AXIS_RZ,
+			intArrayOf(MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE),
+			intArrayOf(MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS)
+		)
+
+		private fun swapFaceButtons(buttons: UInt): UInt
+		{
+			fun swap(buttons: UInt, a: UInt, b: UInt): UInt
+			{
+				val rest = buttons and (a or b).inv()
+				return rest or
+						(if(buttons and a != 0U) b else 0U) or
+						(if(buttons and b != 0U) a else 0U)
+			}
+			return swap(
+				swap(buttons, ControllerState.BUTTON_CROSS, ControllerState.BUTTON_MOON),
+				ControllerState.BUTTON_BOX, ControllerState.BUTTON_PYRAMID)
+		}
 	}
 }

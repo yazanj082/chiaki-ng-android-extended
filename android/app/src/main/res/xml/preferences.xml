@@ -140,6 +140,10 @@
             app:key="mapping_ps"
             app:title="PS Button"
             app:defaultValue="110" />
+        <com.metallic.chiaki.settings.KeyMappingPreference
+            app:key="mapping_touchpad"
+            app:title="Touchpad Click"
+            app:defaultValue="130" />
     </PreferenceCategory>
 
     <PreferenceCategory
