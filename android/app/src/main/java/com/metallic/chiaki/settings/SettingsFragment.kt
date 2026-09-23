@@ -3,9 +3,11 @@
 package com.metallic.chiaki.settings
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Resources
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import androidx.lifecycle.Observer
 import androidx.lifecycle.ViewModelProvider
@@ -29,6 +31,8 @@ class DataStore(val preferences: Preferences): PreferenceDataStore()
 		preferences.swapCrossMoonKey -> preferences.swapCrossMoon
 		preferences.rumbleEnabledKey -> preferences.rumbleEnabled
 		preferences.motionEnabledKey -> preferences.motionEnabled
+		preferences.dualSenseEnabledKey -> preferences.dualSenseEnabled
+		preferences.homeScreenKey -> preferences.homeScreen
 		preferences.buttonHapticEnabledKey -> preferences.buttonHapticEnabled
 		preferences.debandingEnabledKey -> preferences.debandingEnabled
 		preferences.touchscreenTouchpadEnabledKey -> preferences.touchscreenTouchpadEnabled
@@ -43,6 +47,8 @@ class DataStore(val preferences: Preferences): PreferenceDataStore()
 			preferences.swapCrossMoonKey -> preferences.swapCrossMoon = value
 			preferences.rumbleEnabledKey -> preferences.rumbleEnabled = value
 			preferences.motionEnabledKey -> preferences.motionEnabled = value
+			preferences.dualSenseEnabledKey -> preferences.dualSenseEnabled = value
+			preferences.homeScreenKey -> preferences.homeScreen = value
 			preferences.buttonHapticEnabledKey -> preferences.buttonHapticEnabled = value
 			preferences.debandingEnabledKey -> preferences.debandingEnabled = value
 			preferences.touchscreenTouchpadEnabledKey -> preferences.touchscreenTouchpadEnabled = value
@@ -112,6 +118,13 @@ class SettingsFragment: PreferenceFragmentCompat(), TitleFragment
 		preferenceManager.preferenceDataStore = DataStore(preferences)
 		setPreferencesFromResource(R.xml.preferences, rootKey)
 
+		preferenceScreen.findPreference<Preference>(getString(R.string.preferences_home_screen_key))?.setOnPreferenceChangeListener { _, enabled ->
+			// Let the user pick Chiaki as the home screen, now that it is offered as one
+			if(enabled == true)
+				view?.post { showHomeScreenChooser() }
+			true
+		}
+
 		preferenceScreen.findPreference<ListPreference>(getString(R.string.preferences_resolution_key))?.let {
 			it.entryValues = Preferences.resolutionAll.map { res -> res.value }.toTypedArray()
 			it.entries = Preferences.resolutionAll.map { res -> getString(res.title) }.toTypedArray()
@@ -160,6 +173,19 @@ class SettingsFragment: PreferenceFragmentCompat(), TitleFragment
 	}
 
 	override fun getTitle(resources: Resources): String = resources.getString(R.string.title_settings)
+
+	private fun showHomeScreenChooser()
+	{
+		try
+		{
+			startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+		}
+		catch(e: ActivityNotFoundException)
+		{
+			// Without a home app setting, Android asks which one to use
+			startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME))
+		}
+	}
 
 	private fun testControllerRumble()
 	{

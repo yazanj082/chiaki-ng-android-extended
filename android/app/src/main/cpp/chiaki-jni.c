@@ -9,7 +9,11 @@
 #include <chiaki/session.h>
 #include <chiaki/discoveryservice.h>
 #include <chiaki/regist.h>
+#include <chiaki/orientation.h>
+#include <chiaki/time.h>
 
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 #include <linux/in.h>
 #include <linux/in6.h>
@@ -134,6 +138,12 @@ typedef struct android_chiaki_session_t
 	jmethodID java_session_event_login_pin_request_meth;
 	jmethodID java_session_event_quit_meth;
 	jmethodID java_session_event_rumble_meth;
+	jmethodID java_session_event_haptics_meth;
+	jmethodID java_session_event_trigger_effects_meth;
+	jmethodID java_session_event_led_color_meth;
+	jmethodID java_session_event_haptic_intensity_meth;
+	jmethodID java_session_event_trigger_intensity_meth;
+	jmethodID java_session_event_cant_display_meth;
 	jfieldID java_controller_state_buttons;
 	jfieldID java_controller_state_l2_state;
 	jfieldID java_controller_state_r2_state;
@@ -159,7 +169,82 @@ typedef struct android_chiaki_session_t
 	AndroidChiakiVideoDecoder video_decoder;
 	AndroidChiakiAudioDecoder audio_decoder;
 	void *audio_output;
+
+	// Motion of the physical controller, see sessionSetMotion()
+	ChiakiOrientationTracker orient_tracker;
+	ChiakiAccelNewZero accel_zero;
+	bool orient_tracker_active;
+	atomic_bool motion_reset;
+
+	// Haptics audio turned into vibration, see android_chiaki_haptics_frame_cb()
+	uint8_t haptics_peak_left, haptics_peak_right;
+	uint8_t haptics_sent_left, haptics_sent_right;
+	uint64_t haptics_sent_us;
 } AndroidChiakiSession;
+
+/**
+ * The console shows something it doesn't stream (protected content), the video
+ * stays black until it's gone.
+ */
+static void android_chiaki_cant_display_cb(void *user, bool cant_display)
+{
+	AndroidChiakiSession *session = user;
+	JNIEnv *env = attach_thread_jni();
+	if(!env)
+		return;
+	E->CallVoidMethod(env, session->java_session, session->java_session_event_cant_display_meth, (jboolean)cant_display);
+	(*global_vm)->DetachCurrentThread(global_vm);
+}
+
+// Vibration is updated at most this often from the haptics, which arrive every few ms
+#define HAPTICS_RUMBLE_INTERVAL_US 16000
+
+/**
+ * The console streams DualSense haptics as 3 kHz stereo PCM. Android can't play that on
+ * the controller's voice coil actuators, so it drives the rumble motors instead,
+ * following the loudness of each channel.
+ */
+static void android_chiaki_haptics_frame_cb(uint8_t *buf, size_t buf_size, void *user)
+{
+	AndroidChiakiSession *session = user;
+	size_t samples = buf_size / (2 * sizeof(int16_t));
+	if(!samples)
+		return;
+	uint32_t sum_left = 0, sum_right = 0;
+	for(size_t i = 0; i < samples; i++)
+	{
+		int16_t sample[2];
+		memcpy(sample, buf + i * sizeof(sample), sizeof(sample));
+		sum_left += abs(sample[0]);
+		sum_right += abs(sample[1]);
+	}
+	// Average amplitude of 8192 and above is full strength
+	uint32_t left = (sum_left / samples) >> 5;
+	uint32_t right = (sum_right / samples) >> 5;
+	if(left > session->haptics_peak_left)
+		session->haptics_peak_left = left > 0xff ? 0xff : left;
+	if(right > session->haptics_peak_right)
+		session->haptics_peak_right = right > 0xff ? 0xff : right;
+
+	uint64_t now = chiaki_time_now_monotonic_us();
+	if(now - session->haptics_sent_us < HAPTICS_RUMBLE_INTERVAL_US)
+		return;
+	if(session->haptics_peak_left != session->haptics_sent_left
+		|| session->haptics_peak_right != session->haptics_sent_right)
+	{
+		JNIEnv *env = attach_thread_jni();
+		if(!env)
+			return;
+		E->CallVoidMethod(env, session->java_session, session->java_session_event_haptics_meth,
+				(jint)session->haptics_peak_left, (jint)session->haptics_peak_right);
+		(*global_vm)->DetachCurrentThread(global_vm);
+		session->haptics_sent_left = session->haptics_peak_left;
+		session->haptics_sent_right = session->haptics_peak_right;
+	}
+	session->haptics_sent_us = now;
+	session->haptics_peak_left = 0;
+	session->haptics_peak_right = 0;
+}
 
 static void android_chiaki_event_cb(ChiakiEvent *event, void *user)
 {
@@ -199,6 +284,40 @@ static void android_chiaki_event_cb(ChiakiEvent *event, void *user)
 							  (jint)event->rumble.left,
 							  (jint)event->rumble.right);
 			break;
+		case CHIAKI_EVENT_TRIGGER_EFFECTS:
+		{
+			jbyteArray left = jnibytearray_create(env, event->trigger_effects.left, sizeof(event->trigger_effects.left));
+			jbyteArray right = jnibytearray_create(env, event->trigger_effects.right, sizeof(event->trigger_effects.right));
+			E->CallVoidMethod(env, session->java_session,
+							  session->java_session_event_trigger_effects_meth,
+							  (jint)event->trigger_effects.type_left,
+							  (jint)event->trigger_effects.type_right,
+							  left, right);
+			E->DeleteLocalRef(env, left);
+			E->DeleteLocalRef(env, right);
+			break;
+		}
+		case CHIAKI_EVENT_LED_COLOR:
+			E->CallVoidMethod(env, session->java_session,
+							  session->java_session_event_led_color_meth,
+							  (jint)event->led_state[0],
+							  (jint)event->led_state[1],
+							  (jint)event->led_state[2]);
+			break;
+		case CHIAKI_EVENT_HAPTIC_INTENSITY:
+			E->CallVoidMethod(env, session->java_session,
+							  session->java_session_event_haptic_intensity_meth,
+							  (jint)event->intensity);
+			break;
+		case CHIAKI_EVENT_TRIGGER_INTENSITY:
+			E->CallVoidMethod(env, session->java_session,
+							  session->java_session_event_trigger_intensity_meth,
+							  (jint)event->intensity);
+			break;
+		case CHIAKI_EVENT_MOTION_RESET:
+			// Applied on the thread that feeds the motion
+			atomic_store(&session->motion_reset, true);
+			break;
 		default:
 			break;
 	}
@@ -225,11 +344,13 @@ JNIEXPORT void JNICALL JNI_FCN(sessionCreate)(JNIEnv *env, jobject obj, jobject 
 	jstring host_string = E->GetObjectField(env, connect_info_obj, E->GetFieldID(env, connect_info_class, "host", "Ljava/lang/String;"));
 	jbyteArray regist_key_array = E->GetObjectField(env, connect_info_obj, E->GetFieldID(env, connect_info_class, "registKey", "[B"));
 	jbyteArray morning_array = E->GetObjectField(env, connect_info_obj, E->GetFieldID(env, connect_info_class, "morning", "[B"));
+	jboolean enable_dualsense = E->GetBooleanField(env, connect_info_obj, E->GetFieldID(env, connect_info_class, "enableDualSense", "Z"));
 	jobject connect_video_profile_obj = E->GetObjectField(env, connect_info_obj, E->GetFieldID(env, connect_info_class, "videoProfile", "L"BASE_PACKAGE"/ConnectVideoProfile;"));
 	jclass connect_video_profile_class = E->GetObjectClass(env, connect_video_profile_obj);
 
 	ChiakiConnectInfo connect_info = { 0 };
 	connect_info.ps5 = ps5;
+	connect_info.enable_dualsense = enable_dualsense;
 
 	const char *str_borrow = E->GetStringUTFChars(env, host_string, NULL);
 	connect_info.host = host_str = strdup(str_borrow);
@@ -320,6 +441,17 @@ JNIEXPORT void JNICALL JNI_FCN(sessionCreate)(JNIEnv *env, jobject obj, jobject 
 	session->java_session_event_login_pin_request_meth = E->GetMethodID(env, session->java_session_class, "eventLoginPinRequest", "(Z)V");
 	session->java_session_event_quit_meth = E->GetMethodID(env, session->java_session_class, "eventQuit", "(ILjava/lang/String;)V");
 	session->java_session_event_rumble_meth = E->GetMethodID(env, session->java_session_class, "eventRumble", "(II)V");
+	session->java_session_event_haptics_meth = E->GetMethodID(env, session->java_session_class, "eventHaptics", "(II)V");
+	session->java_session_event_trigger_effects_meth = E->GetMethodID(env, session->java_session_class, "eventTriggerEffects", "(II[B[B)V");
+	session->java_session_event_led_color_meth = E->GetMethodID(env, session->java_session_class, "eventLedColor", "(III)V");
+	session->java_session_event_haptic_intensity_meth = E->GetMethodID(env, session->java_session_class, "eventHapticIntensity", "(I)V");
+	session->java_session_event_trigger_intensity_meth = E->GetMethodID(env, session->java_session_class, "eventTriggerIntensity", "(I)V");
+	session->java_session_event_cant_display_meth = E->GetMethodID(env, session->java_session_class, "eventCantDisplay", "(Z)V");
+
+	chiaki_orientation_tracker_init(&session->orient_tracker);
+	chiaki_accel_new_zero_set_inactive(&session->accel_zero, false);
+	session->orient_tracker_active = false;
+	atomic_init(&session->motion_reset, false);
 
 	jclass controller_state_class = E->FindClass(env, BASE_PACKAGE"/ControllerState");
 	session->java_controller_state_buttons = E->GetFieldID(env, controller_state_class, "buttons", "I");
@@ -352,6 +484,19 @@ JNIEXPORT void JNICALL JNI_FCN(sessionCreate)(JNIEnv *env, jobject obj, jobject 
 	ChiakiAudioSink audio_sink;
 	android_chiaki_audio_decoder_get_sink(&session->audio_decoder, &audio_sink);
 	chiaki_session_set_audio_sink(&session->session, &audio_sink);
+
+	ChiakiCtrlDisplaySink display_sink = { 0 };
+	display_sink.user = session;
+	display_sink.cantdisplay_cb = android_chiaki_cant_display_cb;
+	chiaki_session_ctrl_set_display_sink(&session->session, &display_sink);
+
+	if(connect_info.enable_dualsense)
+	{
+		ChiakiAudioSink haptics_sink = { 0 };
+		haptics_sink.user = session;
+		haptics_sink.frame_cb = android_chiaki_haptics_frame_cb;
+		chiaki_session_set_haptics_sink(&session->session, &haptics_sink);
+	}
 
 beach:
 	if(!session && log)
@@ -450,7 +595,21 @@ JNIEXPORT void JNICALL JNI_FCN(sessionSetControllerState)(JNIEnv *env, jobject o
 	controller_state.orient_y = E->GetFloatField(env, controller_state_java, session->java_controller_state_orient_y);
 	controller_state.orient_z = E->GetFloatField(env, controller_state_java, session->java_controller_state_orient_z);
 	controller_state.orient_w = E->GetFloatField(env, controller_state_java, session->java_controller_state_orient_w);
+	if(session->orient_tracker_active)
+		chiaki_orientation_tracker_apply_to_controller_state(&session->orient_tracker, &controller_state);
 	chiaki_session_set_controller_state(&session->session, &controller_state);
+}
+
+JNIEXPORT void JNICALL JNI_FCN(sessionSetMotion)(JNIEnv *env, jobject obj, jlong ptr,
+		jfloat gyro_x, jfloat gyro_y, jfloat gyro_z, jfloat accel_x, jfloat accel_y, jfloat accel_z, jint timestamp_us)
+{
+	AndroidChiakiSession *session = (AndroidChiakiSession *)ptr;
+	// The console asks for this to make the current orientation the neutral one
+	if(atomic_exchange(&session->motion_reset, false))
+		chiaki_orientation_tracker_init(&session->orient_tracker);
+	chiaki_orientation_tracker_update(&session->orient_tracker, gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z,
+			&session->accel_zero, false, (uint32_t)timestamp_us);
+	session->orient_tracker_active = true;
 }
 
 JNIEXPORT void JNICALL JNI_FCN(sessionSetLoginPin)(JNIEnv *env, jobject obj, jlong ptr, jstring pin_java)

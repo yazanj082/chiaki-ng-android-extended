@@ -5,9 +5,14 @@ package com.metallic.chiaki.main
 import android.app.ActivityOptions
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Observer
 import androidx.lifecycle.ViewModelProvider
@@ -27,6 +32,12 @@ import com.metallic.chiaki.stream.StreamActivity
 
 class MainActivity : AppCompatActivity()
 {
+	companion object
+	{
+		// A PS5 takes around 20s to wake up from rest mode
+		private const val WAKEUP_CONNECT_TIMEOUT_MS = 90000L
+	}
+
 	private lateinit var viewModel: MainViewModel
 
 	private lateinit var binding: ActivityMainBinding
@@ -66,6 +77,12 @@ class MainActivity : AppCompatActivity()
 			if(top)
 				binding.hostsRecyclerView.scrollToPosition(0)
 			updateEmptyInfo()
+			connectIfWokenUp(it)
+			// With a controller, the first console is ready to be picked right away
+			if(currentFocus == null && it.isNotEmpty() && Preferences(this).isTv)
+				binding.hostsRecyclerView.post {
+					binding.hostsRecyclerView.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
+				}
 		})
 
 		viewModel.discoveryActive.observe(this, Observer { active: Boolean ->
@@ -97,11 +114,14 @@ class MainActivity : AppCompatActivity()
 	{
 		super.onStart()
 		viewModel.discoveryManager.resume()
+		// The settings may have changed which menu items apply
+		invalidateOptionsMenu()
 	}
 
 	override fun onStop()
 	{
 		super.onStop()
+		stopWakeupConnect()
 		viewModel.discoveryManager.pause()
 	}
 
@@ -122,6 +142,8 @@ class MainActivity : AppCompatActivity()
 		discoveryMenuItem = discoveryItem
 		val discoveryActive = viewModel.discoveryActive.value ?: false
 		updateDiscoveryMenuItem(discoveryItem, discoveryActive)
+		val preferences = Preferences(this)
+		menu.findItem(R.id.action_android_settings).isVisible = preferences.isTv || preferences.homeScreen
 		return true
 	}
 
@@ -144,6 +166,12 @@ class MainActivity : AppCompatActivity()
 			Intent(this, SettingsActivity::class.java).also {
 				startActivity(it)
 			}
+			true
+		}
+
+		R.id.action_android_settings ->
+		{
+			startActivity(Intent(Settings.ACTION_SETTINGS))
 			true
 		}
 
@@ -172,7 +200,9 @@ class MainActivity : AppCompatActivity()
 		if(registeredHost != null)
 		{
 			fun connect() {
-				val connectInfo = ConnectInfo(host.isPS5, host.host, registeredHost.rpRegistKey, registeredHost.rpKey, Preferences(this).videoProfile)
+				val preferences = Preferences(this)
+				val connectInfo = ConnectInfo(host.isPS5, host.host, registeredHost.rpRegistKey, registeredHost.rpKey, preferences.videoProfile,
+					enableDualSense = host.isPS5 && preferences.dualSenseEnabled)
 				Intent(this, StreamActivity::class.java).let {
 					it.putExtra(StreamActivity.EXTRA_CONNECT_INFO, connectInfo)
 					startActivity(it)
@@ -181,10 +211,16 @@ class MainActivity : AppCompatActivity()
 
 			if(host is DiscoveredDisplayHost && host.discoveredHost.state == DiscoveryHost.State.STANDBY)
 			{
+				// With a controller on a TV the obvious choice needs no extra dialog
+				if(Preferences(this).isTv)
+				{
+					wakeupAndConnect(host)
+					return
+				}
 				MaterialAlertDialogBuilder(this)
 					.setMessage(R.string.alert_message_standby_wakeup)
-					.setPositiveButton(R.string.action_wakeup) { _, _ ->
-						wakeupHost(host)
+					.setPositiveButton(R.string.action_wakeup_connect) { _, _ ->
+						wakeupAndConnect(host)
 					}
 					.setNeutralButton(R.string.action_connect_immediately) { _, _ ->
 						connect()
@@ -206,6 +242,49 @@ class MainActivity : AppCompatActivity()
 				startActivity(it)
 			}
 		}
+	}
+
+	private val wakeupConnectHandler = Handler(Looper.getMainLooper())
+	private var wakeupConnectHost: DisplayHost? = null
+	private var wakeupConnectDialog: AlertDialog? = null
+	private val wakeupConnectTimeout = Runnable {
+		stopWakeupConnect()
+		Toast.makeText(this, R.string.wakeup_connect_timeout, Toast.LENGTH_LONG).show()
+	}
+
+	/**
+	 * Wakes the console up and starts the stream as soon as discovery sees it ready.
+	 */
+	private fun wakeupAndConnect(host: DiscoveredDisplayHost)
+	{
+		stopWakeupConnect()
+		viewModel.discoveryManager.active = true
+		wakeupHost(host)
+		wakeupConnectHost = host
+		wakeupConnectDialog = MaterialAlertDialogBuilder(this)
+			.setMessage(getString(R.string.wakeup_connect_waiting, host.name ?: host.host))
+			.setNegativeButton(R.string.action_connect_cancel_connect) { _, _ -> stopWakeupConnect() }
+			.setOnCancelListener { stopWakeupConnect() }
+			.show()
+		wakeupConnectHandler.postDelayed(wakeupConnectTimeout, WAKEUP_CONNECT_TIMEOUT_MS)
+	}
+
+	private fun stopWakeupConnect()
+	{
+		wakeupConnectHandler.removeCallbacks(wakeupConnectTimeout)
+		wakeupConnectHost = null
+		wakeupConnectDialog?.dismiss()
+		wakeupConnectDialog = null
+	}
+
+	private fun connectIfWokenUp(hosts: List<DisplayHost>)
+	{
+		val waitingFor = wakeupConnectHost ?: return
+		val host = hosts.firstOrNull {
+			it is DiscoveredDisplayHost && it.id == waitingFor.id && it.discoveredHost.state == DiscoveryHost.State.READY
+		} ?: return
+		stopWakeupConnect()
+		hostTriggered(host)
 	}
 
 	private fun wakeupHost(host: DisplayHost)

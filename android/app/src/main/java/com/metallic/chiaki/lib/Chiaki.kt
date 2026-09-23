@@ -69,7 +69,9 @@ data class ConnectInfo(
 	val host: String,
 	val registKey: ByteArray,
 	val morning: ByteArray,
-	val videoProfile: ConnectVideoProfile
+	val videoProfile: ConnectVideoProfile,
+	/** Makes the console send adaptive trigger effects and haptics for a DualSense */
+	val enableDualSense: Boolean = false
 ): Parcelable
 
 private class ChiakiNative
@@ -92,6 +94,7 @@ private class ChiakiNative
 		@JvmStatic external fun sessionJoin(ptr: Long): Int
 		@JvmStatic external fun sessionSetSurface(ptr: Long, surface: Surface?)
 		@JvmStatic external fun sessionSetControllerState(ptr: Long, controllerState: ControllerState)
+		@JvmStatic external fun sessionSetMotion(ptr: Long, gyroX: Float, gyroY: Float, gyroZ: Float, accelX: Float, accelY: Float, accelZ: Float, timestampUs: Int)
 		@JvmStatic external fun sessionSetLoginPin(ptr: Long, pin: String)
 		@JvmStatic external fun discoveryServiceCreate(result: CreateResult, options: DiscoveryServiceOptions, javaService: DiscoveryService)
 		@JvmStatic external fun discoveryServiceFree(ptr: Long)
@@ -317,6 +320,29 @@ object ConnectedEvent: Event()
 data class LoginPinRequestEvent(val pinIncorrect: Boolean): Event()
 data class QuitEvent(val reason: QuitReason, val reasonString: String?): Event()
 data class RumbleEvent(val left: UByte, val right: UByte): Event()
+/** Vibration derived from the DualSense haptics audio, 0-255 per side */
+data class HapticsEvent(val left: Int, val right: Int): Event()
+/** Raw DualSense trigger effects: mode byte and 10 parameter bytes per trigger */
+class TriggerEffectsEvent(val typeLeft: Int, val typeRight: Int, val left: ByteArray, val right: ByteArray): Event()
+/** The console shows something that it doesn't stream, the video is black meanwhile */
+data class CantDisplayEvent(val cantDisplay: Boolean): Event()
+data class LedColorEvent(val red: Int, val green: Int, val blue: Int): Event()
+data class HapticIntensityEvent(val intensity: DualSenseIntensity): Event()
+data class TriggerIntensityEvent(val intensity: DualSenseIntensity): Event()
+
+/** The console's vibration and trigger effect intensity settings */
+enum class DualSenseIntensity(val value: Int)
+{
+	OFF(0),
+	STRONG(1),
+	MEDIUM(2),
+	WEAK(3);
+
+	companion object
+	{
+		fun fromValue(value: Int) = values().firstOrNull { it.value == value } ?: STRONG
+	}
+}
 
 class CreateError(val errorCode: ErrorCode): Exception("Failed to create a native object: $errorCode")
 
@@ -377,6 +403,36 @@ class Session(connectInfo: ConnectInfo, logFile: String?, logVerbose: Boolean)
 		event(RumbleEvent(left.toUByte(), right.toUByte()))
 	}
 
+	private fun eventHaptics(left: Int, right: Int)
+	{
+		event(HapticsEvent(left, right))
+	}
+
+	private fun eventTriggerEffects(typeLeft: Int, typeRight: Int, left: ByteArray, right: ByteArray)
+	{
+		event(TriggerEffectsEvent(typeLeft, typeRight, left, right))
+	}
+
+	private fun eventCantDisplay(cantDisplay: Boolean)
+	{
+		event(CantDisplayEvent(cantDisplay))
+	}
+
+	private fun eventLedColor(red: Int, green: Int, blue: Int)
+	{
+		event(LedColorEvent(red, green, blue))
+	}
+
+	private fun eventHapticIntensity(value: Int)
+	{
+		event(HapticIntensityEvent(DualSenseIntensity.fromValue(value)))
+	}
+
+	private fun eventTriggerIntensity(value: Int)
+	{
+		event(TriggerIntensityEvent(DualSenseIntensity.fromValue(value)))
+	}
+
 	fun setSurface(surface: Surface?)
 	{
 		ChiakiNative.sessionSetSurface(nativePtr, surface)
@@ -390,6 +446,15 @@ class Session(connectInfo: ConnectInfo, logFile: String?, logVerbose: Boolean)
 	fun setLoginPin(pin: String)
 	{
 		ChiakiNative.sessionSetLoginPin(nativePtr, pin)
+	}
+
+	/**
+	 * Motion of the controller itself (rad/s and g), which then replaces the motion
+	 * in the controller states, including the orientation derived from it.
+	 */
+	fun setMotion(gyroX: Float, gyroY: Float, gyroZ: Float, accelX: Float, accelY: Float, accelZ: Float, timestampUs: Int)
+	{
+		ChiakiNative.sessionSetMotion(nativePtr, gyroX, gyroY, gyroZ, accelX, accelY, accelZ, timestampUs)
 	}
 }
 

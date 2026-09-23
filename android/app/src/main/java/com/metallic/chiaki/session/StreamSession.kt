@@ -3,6 +3,8 @@
 package com.metallic.chiaki.session
 
 import android.graphics.SurfaceTexture
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.*
 import androidx.lifecycle.LiveData
@@ -26,7 +28,21 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 	private val _state = MutableLiveData<StreamState>(StreamStateIdle)
 	val state: LiveData<StreamState> get() = _state
 	private val _rumbleState = MutableLiveData<RumbleEvent>(RumbleEvent(0U, 0U))
+	/** Vibration from the console's rumble and DualSense haptics combined */
 	val rumbleState: LiveData<RumbleEvent> get() = _rumbleState
+	private val _cantDisplay = MutableLiveData(false)
+	val cantDisplay: LiveData<Boolean> get() = _cantDisplay
+
+	private val mainHandler = Handler(Looper.getMainLooper())
+	private val dualSenseFeedback = if(connectInfo.enableDualSense) DualSenseFeedback() else null
+	private var consoleRumble = RumbleEvent(0U, 0U)
+	private var hapticsRumble = HapticsEvent(0, 0)
+	private var hapticIntensity = DualSenseIntensity.STRONG
+	// The console stops sending haptics without a final silent frame
+	private val hapticsTimeout = Runnable {
+		hapticsRumble = HapticsEvent(0, 0)
+		updateRumble()
+	}
 
 	private var surfaceTexture: SurfaceTexture? = null
 	private var surface: Surface? = null
@@ -36,6 +52,9 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 		input.controllerStateChangedCallback = {
 			session?.setControllerState(it)
 		}
+		input.controllerMotionCallback = { gyroX, gyroY, gyroZ, accelX, accelY, accelZ, timestampUs ->
+			session?.setMotion(gyroX, gyroY, gyroZ, accelX, accelY, accelZ, timestampUs)
+		}
 	}
 
 	fun shutdown()
@@ -43,14 +62,50 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 		session?.stop()
 		session?.dispose()
 		session = null
-		surface = null
 		_state.value = StreamStateIdle
+		dualSenseFeedback?.reset()
+		mainHandler.removeCallbacks(hapticsTimeout)
+		consoleRumble = RumbleEvent(0U, 0U)
+		hapticsRumble = HapticsEvent(0, 0)
+		updateRumble()
 		//surfaceTexture?.release()
+	}
+
+	/**
+	 * For when the stream is gone for good.
+	 */
+	fun release()
+	{
+		shutdown()
+		dualSenseFeedback?.close()
+	}
+
+	fun onInputDevicesChanged()
+	{
+		dualSenseFeedback?.rescan()
+	}
+
+	private fun updateRumble()
+	{
+		val scale = when(hapticIntensity)
+		{
+			DualSenseIntensity.OFF -> 0
+			DualSenseIntensity.WEAK -> 1
+			DualSenseIntensity.MEDIUM -> 2
+			DualSenseIntensity.STRONG -> 3
+		}
+		fun combine(rumble: UByte, haptics: Int) = (maxOf(rumble.toInt(), haptics) * scale / 3).toUByte()
+		val value = RumbleEvent(combine(consoleRumble.left, hapticsRumble.left), combine(consoleRumble.right, hapticsRumble.right))
+		if(value != _rumbleState.value)
+			_rumbleState.value = value
 	}
 
 	fun pause()
 	{
 		shutdown()
+		// The views hand over a new surface when they come back.
+		// A reconnect keeps the current one, as nothing would hand it over again.
+		surface = null
 	}
 
 	fun resume()
@@ -74,12 +129,40 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 		}
 	}
 
+	/**
+	 * Runs on the main thread, unless the session has ended by then,
+	 * so a late event can't start the vibration again after shutdown() stopped it.
+	 */
+	private fun postWhileRunning(action: () -> Unit)
+	{
+		mainHandler.post {
+			if(session != null)
+				action()
+		}
+	}
+
 	private fun eventCallback(event: Event)
 	{
 		when(event)
 		{
-			is ConnectedEvent -> _state.postValue(StreamStateConnected)
-			is QuitEvent -> _state.postValue(
+			is ConnectedEvent -> mainHandler.post {
+				inUseRetries = 0
+				_state.value = StreamStateConnected
+			}
+			// A session that just ended may still count as in use on the console for a moment
+			is QuitEvent -> if(event.reason.value == QUIT_REASON_RP_IN_USE && inUseRetries < IN_USE_RETRIES_MAX)
+				postWhileRunning {
+					inUseRetries++
+					Log.i("StreamSession", "Console still in use, retry $inUseRetries in ${IN_USE_RETRY_DELAY_MS}ms")
+					mainHandler.postDelayed({
+						if(session != null)
+						{
+							shutdown()
+							resume()
+						}
+					}, IN_USE_RETRY_DELAY_MS)
+				}
+			else _state.postValue(
 				StreamStateQuit(
 					event.reason,
 					event.reasonString
@@ -90,7 +173,24 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 					event.pinIncorrect
 				)
 			)
-			is RumbleEvent -> _rumbleState.postValue(event)
+			is RumbleEvent -> postWhileRunning {
+				consoleRumble = event
+				updateRumble()
+			}
+			is HapticsEvent -> postWhileRunning {
+				hapticsRumble = event
+				mainHandler.removeCallbacks(hapticsTimeout)
+				mainHandler.postDelayed(hapticsTimeout, HAPTICS_TIMEOUT_MS)
+				updateRumble()
+			}
+			is HapticIntensityEvent -> postWhileRunning {
+				hapticIntensity = event.intensity
+				updateRumble()
+			}
+			is TriggerEffectsEvent -> dualSenseFeedback?.setTriggerEffects(event.typeLeft, event.typeRight, event.left, event.right)
+			is TriggerIntensityEvent -> dualSenseFeedback?.setTriggerIntensity(event.intensity)
+			is CantDisplayEvent -> _cantDisplay.postValue(event.cantDisplay)
+			is LedColorEvent -> dualSenseFeedback?.setLightbar(event.red, event.green, event.blue)
 		}
 	}
 
@@ -165,5 +265,16 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 	fun setLoginPin(pin: String)
 	{
 		session?.setLoginPin(pin)
+	}
+
+	private var inUseRetries = 0
+
+	companion object
+	{
+		private const val HAPTICS_TIMEOUT_MS = 100L
+		// CHIAKI_QUIT_REASON_SESSION_REQUEST_RP_IN_USE
+		private const val QUIT_REASON_RP_IN_USE = 4
+		private const val IN_USE_RETRIES_MAX = 5
+		private const val IN_USE_RETRY_DELAY_MS = 2000L
 	}
 }

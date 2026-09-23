@@ -2,8 +2,10 @@
 
 package com.metallic.chiaki.common
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import androidx.annotation.StringRes
 import androidx.preference.PreferenceManager
 import com.metallic.chiaki.R
@@ -40,7 +42,6 @@ class Preferences(context: Context)
 
 	companion object
 	{
-		val resolutionDefault = Resolution.RES_720P
 		val resolutionAll = Resolution.values()
 		val fpsDefault = FPS.FPS_60
 		val fpsAll = FPS.values()
@@ -57,6 +58,16 @@ class Preferences(context: Context)
 	}.also { sharedPreferences.registerOnSharedPreferenceChangeListener(it) }
 
 	private val resources = context.resources
+	private val packageManager = context.packageManager
+	private val homeActivity = ComponentName(context, "com.metallic.chiaki.main.HomeActivity")
+
+	/**
+	 * TV boxes and other devices without a touchscreen, played with a controller on a big screen
+	 */
+	val isTv = !packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+			|| packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
+	private val resolutionDefault = if(isTv) Resolution.RES_1080P else Resolution.RES_720P
 
 	val discoveryEnabledKey get() = resources.getString(R.string.preferences_discovery_enabled_key)
 	var discoveryEnabled
@@ -65,14 +76,29 @@ class Preferences(context: Context)
 
 	val onScreenControlsEnabledKey get() = resources.getString(R.string.preferences_on_screen_controls_enabled_key)
 	var onScreenControlsEnabled
-		get() = sharedPreferences.getBoolean(onScreenControlsEnabledKey, true)
+		get() = sharedPreferences.getBoolean(onScreenControlsEnabledKey, !isTv)
 		set(value) { sharedPreferences.edit().putBoolean(onScreenControlsEnabledKey, value).apply() }
 
+
+	/**
+	 * Whether Chiaki is offered as the home screen, which makes a TV box start into it
+	 */
+	val homeScreenKey get() = resources.getString(R.string.preferences_home_screen_key)
+	var homeScreen
+		get() = packageManager.getComponentEnabledSetting(homeActivity) == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+		set(value) = packageManager.setComponentEnabledSetting(homeActivity,
+			if(value) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+			PackageManager.DONT_KILL_APP)
 
 	val rumbleEnabledKey get() = resources.getString(R.string.preferences_rumble_enabled_key)
 	var rumbleEnabled
 		get() = sharedPreferences.getBoolean(rumbleEnabledKey, true)
 		set(value) { sharedPreferences.edit().putBoolean(rumbleEnabledKey, value).apply() }
+
+	val dualSenseEnabledKey get() = resources.getString(R.string.preferences_dualsense_enabled_key)
+	var dualSenseEnabled
+		get() = sharedPreferences.getBoolean(dualSenseEnabledKey, true)
+		set(value) { sharedPreferences.edit().putBoolean(dualSenseEnabledKey, value).apply() }
 
 	val motionEnabledKey get() = resources.getString(R.string.preferences_motion_enabled_key)
 	var motionEnabled

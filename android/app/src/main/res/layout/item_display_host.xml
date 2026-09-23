@@ -12,7 +12,7 @@
     android:layout_marginRight="8dp"
     android:layout_marginBottom="0dp"
     android:elevation="8dp"
-    android:foreground="?android:attr/selectableItemBackground">
+    android:foreground="@drawable/host_card_foreground">
 
     <FrameLayout
         android:id="@+id/discoveredIndicatorLayout"

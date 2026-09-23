@@ -2,6 +2,7 @@ package com.metallic.chiaki.session
 
 import android.content.Context
 import android.hardware.*
+import android.os.Build
 import android.view.*
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleObserver
@@ -22,7 +23,7 @@ class StreamInput(val context: Context, val preferences: Preferences)
 
 	val controllerState: ControllerState get()
 	{
-		val controllerState = sensorControllerState or keyControllerState or motionControllerState
+		val controllerState = sensorControllerState or keyControllerState or motionControllerState or touchpadControllerState
 
 		val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 		@Suppress("DEPRECATION")
@@ -55,6 +56,7 @@ class StreamInput(val context: Context, val preferences: Preferences)
 	private val sensorControllerState = ControllerState() // from Motion Sensors
 	private val keyControllerState = ControllerState() // from KeyEvents
 	private val motionControllerState = ControllerState() // from MotionEvents
+	private val touchpadControllerState = ControllerState() // from the controller's touchpad
 	var touchControllerState = ControllerState()
 		set(value)
 		{
@@ -121,27 +123,103 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
 	}
 
-	private val motionLifecycleObserver = object: LifecycleObserver {
-		@OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
-		fun onResume()
+	/**
+	 * Receives the motion of controllers that have their own sensors (DualSense, DualShock 4
+	 * on Android 12+) in rad/s and g. The phone's sensors are not used while one is connected.
+	 */
+	var controllerMotionCallback: ((gyroX: Float, gyroY: Float, gyroZ: Float, accelX: Float, accelY: Float, accelZ: Float, timestampUs: Int) -> Unit)? = null
+
+	private var controllerSensorManager: SensorManager? = null
+	private val controllerAccel = floatArrayOf(0.0f, 1.0f, 0.0f)
+
+	private val controllerSensorEventListener = object: SensorEventListener {
+		override fun onSensorChanged(event: SensorEvent)
 		{
-			val samplingPeriodUs = 4000
-			val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-			listOfNotNull(
-				sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),
-				sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE),
-				sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-			).forEach {
-				sensorManager.registerListener(sensorEventListener, it, samplingPeriodUs)
+			when(event.sensor.type)
+			{
+				Sensor.TYPE_ACCELEROMETER ->
+					for(i in 0 until 3)
+						controllerAccel[i] = event.values[i] / SensorManager.GRAVITY_EARTH
+				// The gyroscope drives the updates, with the latest acceleration
+				Sensor.TYPE_GYROSCOPE -> {
+					controllerMotionCallback?.invoke(event.values[0], event.values[1], event.values[2],
+						controllerAccel[0], controllerAccel[1], controllerAccel[2], (event.timestamp / 1000).toInt())
+					controllerStateUpdated()
+				}
 			}
 		}
 
-		@OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
-		fun onPause()
-		{
-			val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-			sensorManager.unregisterListener(sensorEventListener)
+		override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+	}
+
+	private var motionActive = false
+
+	private fun startMotion()
+	{
+		motionActive = true
+		if(startControllerMotion())
+			return
+		val samplingPeriodUs = 4000
+		val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+		listOfNotNull(
+			sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),
+			sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE),
+			sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+		).forEach {
+			sensorManager.registerListener(sensorEventListener, it, samplingPeriodUs)
 		}
+	}
+
+	private fun stopMotion()
+	{
+		motionActive = false
+		val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+		sensorManager.unregisterListener(sensorEventListener)
+		controllerSensorManager?.unregisterListener(controllerSensorEventListener)
+		controllerSensorManager = null
+	}
+
+	/**
+	 * Picks the motion sensors of the controller in use, or of any connected controller.
+	 * @return whether a controller with motion sensors was found
+	 */
+	private fun startControllerMotion(): Boolean
+	{
+		if(Build.VERSION.SDK_INT < Build.VERSION_CODES.S)
+			return false
+		val devices = (listOfNotNull(lastControllerDeviceId) + InputDevice.getDeviceIds().toList())
+			.mapNotNull { InputDevice.getDevice(it) }
+			.filter { !it.isVirtual }
+		for(device in devices)
+		{
+			val sensorManager = device.sensorManager
+			val gyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) ?: continue
+			val accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: continue
+			sensorManager.registerListener(controllerSensorEventListener, gyro, SensorManager.SENSOR_DELAY_FASTEST)
+			sensorManager.registerListener(controllerSensorEventListener, accel, SensorManager.SENSOR_DELAY_FASTEST)
+			controllerSensorManager = sensorManager
+			return true
+		}
+		return false
+	}
+
+	/**
+	 * Controllers were connected or disconnected, which may change the motion source.
+	 */
+	fun onInputDevicesChanged()
+	{
+		if(!motionActive)
+			return
+		stopMotion()
+		startMotion()
+	}
+
+	private val motionLifecycleObserver = object: LifecycleObserver {
+		@OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
+		fun onResume() = startMotion()
+
+		@OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+		fun onPause() = stopMotion()
 	}
 
 	fun observe(lifecycleOwner: LifecycleOwner)
@@ -150,9 +228,43 @@ class StreamInput(val context: Context, val preferences: Preferences)
 			lifecycleOwner.lifecycle.addObserver(motionLifecycleObserver)
 	}
 
+	/**
+	 * Called when L1 + R1 + Options + Share are held together, so the stream can be left
+	 * with nothing but a controller, e.g. on a TV box.
+	 */
+	var menuComboCallback: (() -> Unit)? = null
+	private var menuComboActive = false
+
 	private fun controllerStateUpdated()
 	{
-		controllerStateChangedCallback?.let { it(controllerState) }
+		val state = controllerState
+		val comboHeld = state.buttons and MENU_COMBO == MENU_COMBO
+		if(comboHeld && !menuComboActive)
+			menuComboCallback?.invoke()
+		menuComboActive = comboHeld
+		controllerStateChangedCallback?.let { it(state) }
+	}
+
+	/**
+	 * Releases all buttons and centers the sticks, for when the stream loses the input,
+	 * so the console doesn't see buttons stuck in the pressed state.
+	 */
+	fun releaseAll()
+	{
+		keyControllerState.buttons = 0U
+		keyControllerState.l2State = 0U
+		keyControllerState.r2State = 0U
+		motionControllerState.buttons = 0U
+		motionControllerState.l2State = 0U
+		motionControllerState.r2State = 0U
+		motionControllerState.leftX = 0
+		motionControllerState.leftY = 0
+		motionControllerState.rightX = 0
+		motionControllerState.rightY = 0
+		touchpadTouches.values.forEach { touchpadControllerState.stopTouch(it) }
+		touchpadTouches.clear()
+		touchpadControllerState.buttons = 0U
+		controllerStateUpdated()
 	}
 
 	private fun rememberController(event: InputEvent)
@@ -246,8 +358,53 @@ class StreamInput(val context: Context, val preferences: Preferences)
 			lastControllerDeviceId = null
 	}
 
+	// Android pointer id -> touch id in touchpadControllerState
+	private val touchpadTouches = mutableMapOf<Int, UByte>()
+
+	/**
+	 * Touches and clicks on the controller's touchpad, which the PS Remote Play Orange Pi
+	 * image reports as a touch navigation device (a mouse pointer by default).
+	 */
+	private fun onTouchpadEvent(event: MotionEvent): Boolean
+	{
+		val device = event.device
+		fun scale(value: Float, axis: Int, size: UShort): UShort
+		{
+			val range = device?.getMotionRange(axis, event.source)
+			val normalized = if(range != null && range.range > 0.0f) (value - range.min) / range.range else value / size.toFloat()
+			return (normalized * (size.toFloat() - 1.0f)).coerceIn(0.0f, size.toFloat() - 1.0f).toUInt().toUShort()
+		}
+		fun x(index: Int) = scale(event.getX(index), MotionEvent.AXIS_X, ControllerState.TOUCHPAD_WIDTH)
+		fun y(index: Int) = scale(event.getY(index), MotionEvent.AXIS_Y, ControllerState.TOUCHPAD_HEIGHT)
+
+		val state = touchpadControllerState
+		when(event.actionMasked)
+		{
+			MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+				val index = event.actionIndex
+				state.startTouch(x(index), y(index))?.let { touchpadTouches[event.getPointerId(index)] = it }
+			}
+			MotionEvent.ACTION_MOVE ->
+				for(index in 0 until event.pointerCount)
+					touchpadTouches[event.getPointerId(index)]?.let { state.setTouchPos(it, x(index), y(index)) }
+			MotionEvent.ACTION_POINTER_UP ->
+				touchpadTouches.remove(event.getPointerId(event.actionIndex))?.let { state.stopTouch(it) }
+			MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+				touchpadTouches.values.forEach { state.stopTouch(it) }
+				touchpadTouches.clear()
+			}
+		}
+		val clicked = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0
+			&& event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL
+		state.buttons = if(clicked) ControllerState.BUTTON_TOUCHPAD else 0U
+		controllerStateUpdated()
+		return true
+	}
+
 	fun onGenericMotionEvent(event: MotionEvent): Boolean
 	{
+		if(event.isFromSource(InputDevice.SOURCE_TOUCH_NAVIGATION))
+			return onTouchpadEvent(event)
 		if(event.source and InputDevice.SOURCE_CLASS_JOYSTICK != InputDevice.SOURCE_CLASS_JOYSTICK)
 			return false
 		fun Float.signedAxis() = (this.coerceIn(-1.0f, 1.0f) * Short.MAX_VALUE).toInt().toShort()
@@ -294,6 +451,9 @@ class StreamInput(val context: Context, val preferences: Preferences)
 	companion object
 	{
 		private const val VENDOR_ID_SONY = 0x054c
+
+		private val MENU_COMBO = ControllerState.BUTTON_L1 or ControllerState.BUTTON_R1 or
+				ControllerState.BUTTON_OPTIONS or ControllerState.BUTTON_SHARE
 
 		private val defaultAxisLayout = AxisLayout(
 			MotionEvent.AXIS_Z,

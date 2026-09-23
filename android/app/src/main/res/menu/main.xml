@@ -14,4 +14,11 @@
         android:icon="@drawable/ic_settings"
         android:title="@string/action_settings"
         app:showAsAction="never" />
+
+    <!-- Shown on TV boxes and when Chiaki is the home screen, to get to Wi-Fi, Bluetooth etc. -->
+    <item
+        android:id="@+id/action_android_settings"
+        android:title="@string/action_android_settings"
+        android:visible="false"
+        app:showAsAction="never" />
 </menu>

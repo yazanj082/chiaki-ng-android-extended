@@ -4,7 +4,6 @@ package com.metallic.chiaki.stream
 
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
-import android.app.AlertDialog
 import android.content.pm.ActivityInfo
 import android.graphics.Matrix
 import android.hardware.input.InputManager
@@ -12,6 +11,7 @@ import android.os.*
 import android.view.*
 import android.widget.EditText
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
@@ -34,6 +34,7 @@ private sealed class DialogContents
 private object StreamQuitDialog: DialogContents()
 private object CreateErrorDialog: DialogContents()
 private object PinRequestDialog: DialogContents()
+private object StreamMenuDialog: DialogContents()
 
 class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListener
 {
@@ -75,6 +76,12 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 				it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
 			}
 
+		// Cutscenes can run for minutes without any input, the screen must not go to sleep meanwhile
+		window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+		// Ask TVs to switch to their low latency game mode (ALLM) over HDMI
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+			window.setPreferMinimalPostProcessing(true)
+
 		binding = ActivityStreamBinding.inflate(layoutInflater)
 		setContentView(binding.root)
 		window.decorView.setOnSystemUiVisibilityChangeListener(this)
@@ -115,6 +122,10 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		}
 
 		viewModel.session.state.observe(this, Observer { this.stateChanged(it) })
+		viewModel.session.cantDisplay.observe(this, Observer {
+			if(it)
+				Toast.makeText(this, R.string.stream_cant_display, Toast.LENGTH_LONG).show()
+		})
 		adjustStreamViewAspect()
 
 		if(Preferences(this).rumbleEnabled)
@@ -140,9 +151,25 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 
 	private val inputDeviceListener = object: InputManager.InputDeviceListener
 	{
-		override fun onInputDeviceAdded(deviceId: Int) {}
-		override fun onInputDeviceRemoved(deviceId: Int) = viewModel.input.forgetInputDevice(deviceId)
-		override fun onInputDeviceChanged(deviceId: Int) = viewModel.input.forgetInputDevice(deviceId)
+		override fun onInputDeviceAdded(deviceId: Int) = inputDevicesChanged()
+
+		override fun onInputDeviceRemoved(deviceId: Int)
+		{
+			viewModel.input.forgetInputDevice(deviceId)
+			inputDevicesChanged()
+		}
+
+		override fun onInputDeviceChanged(deviceId: Int)
+		{
+			viewModel.input.forgetInputDevice(deviceId)
+			inputDevicesChanged()
+		}
+
+		private fun inputDevicesChanged()
+		{
+			viewModel.input.onInputDevicesChanged()
+			viewModel.session.onInputDevicesChanged()
+		}
 	}
 
 	/**
@@ -233,6 +260,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 			binding.debandSurfaceView.onResume()
 		}
 		(getSystemService(INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputDeviceListener, null)
+		viewModel.input.menuComboCallback = { showStreamMenu() }
 		viewModel.session.resume()
 	}
 
@@ -242,6 +270,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		if (Preferences(this).debandingEnabled) {
 			binding.debandSurfaceView.onPause()
 		}
+		viewModel.input.menuComboCallback = null
 		(getSystemService(INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(inputDeviceListener)
 		rumble?.stop()
 		viewModel.session.pause()
@@ -338,9 +367,45 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 				dialogContents = null
 		}
 
+	/**
+	 * Lets controller-only setups (TV boxes) leave the stream, opened with L1 + R1 + Options + Share.
+	 */
+	private fun showStreamMenu()
+	{
+		if(dialog != null)
+			return
+		// The dialog takes the input from here on, so the console must not see the combo held forever
+		viewModel.input.releaseAll()
+		dialog = MaterialAlertDialogBuilder(this)
+			.setTitle(R.string.stream_menu_title)
+			.setItems(arrayOf(getString(R.string.action_stream_menu_resume), getString(R.string.action_quit_session))) { _, which ->
+				if(which == 1)
+					finish()
+			}
+			.setOnDismissListener {
+				dialog = null
+				hideSystemUI()
+			}
+			.create()
+		dialogContents = StreamMenuDialog
+		dialog?.show()
+	}
+
+	private var streamMenuHintShown = false
+
+	private fun isControllerConnected() = InputDevice.getDeviceIds().any { id ->
+		InputDevice.getDevice(id)?.let { it.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD } ?: false
+	}
+
 	private fun stateChanged(state: StreamState)
 	{
 		binding.progressBar.visibility = if(state == StreamStateConnecting) View.VISIBLE else View.GONE
+
+		if(state == StreamStateConnected && !streamMenuHintShown && isControllerConnected())
+		{
+			streamMenuHintShown = true
+			Toast.makeText(this, R.string.stream_menu_hint, Toast.LENGTH_LONG).show()
+		}
 
 		when(state)
 		{
