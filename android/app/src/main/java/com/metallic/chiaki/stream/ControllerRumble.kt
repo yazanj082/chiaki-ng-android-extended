@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
+
+package com.metallic.chiaki.stream
+
+import android.content.Context
+import android.media.AudioAttributes
+import android.os.Build
+import android.os.CombinedVibration
+import android.os.Handler
+import android.os.Looper
+import android.os.VibrationAttributes
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.view.InputDevice
+import androidx.annotation.RequiresApi
+import kotlin.math.min
+
+/**
+ * Plays the console's rumble on the controller that is being used.
+ * Falls back to the phone's vibration motor only when no physical controller is in use.
+ */
+class ControllerRumble(private val context: Context)
+{
+	companion object
+	{
+		// Effects are held until the console sends the next rumble state
+		private const val HOLD_DURATION_MS = 60000L
+		private const val PWM_PERIOD_MS = 20L
+	}
+
+	enum class Result
+	{
+		OFF,
+		CONTROLLER,
+		PHONE,
+		/** A controller is in use, but Android does not expose vibration motors for it */
+		CONTROLLER_CANNOT_VIBRATE
+	}
+
+	private val stopActions = mutableListOf<() -> Unit>()
+
+	/**
+	 * @param controllerDeviceId the controller that last sent input, or null if only touch controls are used
+	 * @param left strong/low frequency motor, 0-255
+	 * @param right weak/high frequency motor, 0-255
+	 */
+	fun rumble(controllerDeviceId: Int?, left: Int, right: Int): Result
+	{
+		stop()
+		if(left == 0 && right == 0)
+			return Result.OFF
+
+		val controller = controllerDeviceId?.let { InputDevice.getDevice(it) }
+		if(controller != null || anyControllerConnected())
+		{
+			val target = controller?.takeIf { hasVibrator(it) } ?: findControllerWithVibrator()
+				?: return Result.CONTROLLER_CANNOT_VIBRATE
+			rumbleController(target, left, right)
+			return Result.CONTROLLER
+		}
+		rumblePhone(left, right)
+		return Result.PHONE
+	}
+
+	fun controllerName(deviceId: Int?) =
+		deviceId?.let { InputDevice.getDevice(it)?.name } ?: connectedControllers().firstOrNull()?.name
+
+	class ControllerInfo(val name: String, val vendorId: Int, val productId: Int, val motors: Int)
+	{
+		override fun toString(): String
+		{
+			val support = when(motors)
+			{
+				0 -> "no vibration motors exposed by Android"
+				1 -> "1 vibration motor"
+				else -> "$motors vibration motors"
+			}
+			return "$name (${String.format("%04x:%04x", vendorId, productId)}): $support"
+		}
+	}
+
+	/**
+	 * Vibrates every connected controller that supports it at full strength for [durationMs].
+	 * @return the connected controllers and their vibration support
+	 */
+	fun testControllers(durationMs: Long): List<ControllerInfo>
+	{
+		stop()
+		val controllers = connectedControllers().toList()
+		controllers.filter { hasVibrator(it) }.forEach { rumbleController(it, 255, 255) }
+		Handler(Looper.getMainLooper()).postDelayed({ stop() }, durationMs)
+		return controllers.map { ControllerInfo(it.name, it.vendorId, it.productId, motorCount(it)) }
+	}
+
+	fun stop()
+	{
+		stopActions.forEach { it() }
+		stopActions.clear()
+	}
+
+	private fun isController(device: InputDevice) =
+		!device.isVirtual && (device.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD
+			|| device.sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
+
+	private fun connectedControllers() =
+		InputDevice.getDeviceIds().asSequence().mapNotNull { InputDevice.getDevice(it) }.filter { isController(it) }
+
+	private fun anyControllerConnected() = connectedControllers().any()
+
+	private fun findControllerWithVibrator() = connectedControllers().firstOrNull { hasVibrator(it) }
+
+	private fun motorCount(device: InputDevice) =
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+			device.vibratorManager.vibratorIds.size
+		else
+			@Suppress("DEPRECATION")
+			if(device.vibrator.hasVibrator()) 1 else 0
+
+	private fun hasVibrator(device: InputDevice) = motorCount(device) > 0
+
+	private fun rumbleController(device: InputDevice, left: Int, right: Int)
+	{
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+		{
+			val manager = device.vibratorManager
+			val ids = manager.vibratorIds
+			if(ids.size >= 2 && ids.take(2).all { manager.getVibrator(it).hasAmplitudeControl() })
+			{
+				rumbleDualMotor(manager, left, right)
+				return
+			}
+			val vibrator = manager.defaultVibrator
+			rumbleSingleMotor(vibrator, left, right)
+			return
+		}
+		@Suppress("DEPRECATION")
+		rumbleSingleMotor(device.vibrator, left, right)
+	}
+
+	private fun rumblePhone(left: Int, right: Int)
+	{
+		val vibrator = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+			(context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+		else
+			@Suppress("DEPRECATION")
+			context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+		if(vibrator.hasVibrator())
+			rumbleSingleMotor(vibrator, left, right)
+	}
+
+	@RequiresApi(Build.VERSION_CODES.S)
+	private fun rumbleDualMotor(manager: VibratorManager, left: Int, right: Int)
+	{
+		// Rumble controllers list the weak (high frequency) motor first, then the strong one
+		val ids = manager.vibratorIds
+		val amplitudes = intArrayOf(right, left)
+		val combination = CombinedVibration.startParallel()
+		for(i in 0 until 2)
+		{
+			// Amplitude 0 is not allowed; leaving a motor out turns it off
+			if(amplitudes[i] > 0)
+				combination.addVibrator(ids[i], VibrationEffect.createOneShot(HOLD_DURATION_MS, min(255, amplitudes[i])))
+		}
+		val attributes = VibrationAttributes.Builder()
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+			attributes.setUsage(VibrationAttributes.USAGE_MEDIA)
+		manager.vibrate(combination.combine(), attributes.build())
+		stopActions.add { manager.cancel() }
+	}
+
+	private fun rumbleSingleMotor(vibrator: Vibrator, left: Int, right: Int)
+	{
+		// One motor has to represent both: weigh the strong motor more than the weak one
+		val amplitude = min(255, (left * 0.8 + right * 0.33).toInt())
+		if(amplitude == 0)
+			return
+		stopActions.add { vibrator.cancel() }
+
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl())
+		{
+			vibrate(vibrator, VibrationEffect.createOneShot(HOLD_DURATION_MS, amplitude))
+			return
+		}
+
+		// No amplitude control: approximate the strength by pulsing the motor
+		val onTime = (amplitude / 255.0 * PWM_PERIOD_MS).toLong().coerceAtLeast(1)
+		val offTime = PWM_PERIOD_MS - onTime
+		val pattern = longArrayOf(0, onTime, offTime)
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+			vibrate(vibrator, VibrationEffect.createWaveform(pattern, 0))
+		else
+			@Suppress("DEPRECATION")
+			vibrator.vibrate(pattern, 0)
+	}
+
+	@RequiresApi(Build.VERSION_CODES.O)
+	private fun vibrate(vibrator: Vibrator, effect: VibrationEffect)
+	{
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+			vibrator.vibrate(effect, VibrationAttributes.Builder().setUsage(VibrationAttributes.USAGE_MEDIA).build())
+		else
+			@Suppress("DEPRECATION")
+			vibrator.vibrate(effect, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build())
+	}
+}

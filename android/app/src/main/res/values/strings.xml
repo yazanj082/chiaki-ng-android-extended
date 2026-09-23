@@ -91,7 +91,12 @@
     <string name="preferences_swap_cross_moon_title">Swap Cross/Moon and Box/Pyramid Buttons</string>
     <string name="preferences_swap_cross_moon_summary">Swap face buttons if default mapping is incorrect (e.g. for 8BitDo controllers)</string>
     <string name="preferences_rumble_enabled_title">Rumble</string>
-    <string name="preferences_rumble_enabled_summary">Use phone vibration motor for rumble</string>
+    <string name="preferences_rumble_enabled_summary">Vibrate the connected controller (falls back to the phone when no controller is used)</string>
+    <string name="preferences_test_rumble_title">Test Controller Vibration</string>
+    <string name="preferences_test_rumble_summary">Vibrate connected controllers and show whether this phone supports their vibration</string>
+    <string name="test_rumble_no_controllers">No game controller is connected.</string>
+    <string name="test_rumble_unsupported_note">Controllers without vibration motors exposed by Android cannot vibrate in any app on this phone. This depends on the phone\'s system software and the controller\'s firmware.</string>
+    <string name="rumble_controller_cannot_vibrate">The console sent vibration, but this phone does not expose vibration for %1$s</string>
     <string name="preferences_motion_enabled_title">Motion</string>
     <string name="preferences_motion_enabled_summary">Use device\'s motion sensors for controller motion</string>
     <string name="preferences_button_haptic_enabled_title">Touch Haptics</string>

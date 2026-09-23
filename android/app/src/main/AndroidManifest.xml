@@ -15,7 +15,11 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
+        android:resizeableActivity="true"
         tools:ignore="GoogleAppIndexingWarning">
+
+        <!-- Samsung DeX: keep the app alive when switching between phone and DeX -->
+        <meta-data android:name="com.samsung.android.keepalive.density" android:value="true" />
 
         <provider
             android:authorities="com.metallic.chiaki.fileprovider"
@@ -37,11 +41,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Orientation is locked to landscape at runtime, except in DeX/desktop mode where the
+             window must stay freely resizable. Handling the resize-related config changes keeps
+             the stream running when the window is resized or a controller (dis)connects. -->
         <activity
             android:name=".stream.StreamActivity"
             android:theme="@style/StreamTheme"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
-            android:screenOrientation="userLandscape"/>
+            android:resizeableActivity="true"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|screenLayout|uiMode"/>
 
         <activity
             android:name=".settings.SettingsActivity" />

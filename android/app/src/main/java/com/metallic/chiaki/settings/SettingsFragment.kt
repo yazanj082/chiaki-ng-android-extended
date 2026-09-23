@@ -10,12 +10,14 @@ import android.text.InputType
 import androidx.lifecycle.Observer
 import androidx.lifecycle.ViewModelProvider
 import androidx.preference.*
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.metallic.chiaki.R
 import com.metallic.chiaki.common.Preferences
 import com.metallic.chiaki.common.exportAndShareAllSettings
 import com.metallic.chiaki.common.ext.viewModelFactory
 import com.metallic.chiaki.common.getDatabase
 import com.metallic.chiaki.common.importSettingsFromUri
+import com.metallic.chiaki.stream.ControllerRumble
 import io.reactivex.disposables.CompositeDisposable
 import io.reactivex.rxkotlin.addTo
 
@@ -148,6 +150,7 @@ class SettingsFragment: PreferenceFragmentCompat(), TitleFragment
 
 		preferenceScreen.findPreference<Preference>(getString(R.string.preferences_export_settings_key))?.setOnPreferenceClickListener { exportSettings(); true }
 		preferenceScreen.findPreference<Preference>(getString(R.string.preferences_import_settings_key))?.setOnPreferenceClickListener { importSettings(); true }
+		preferenceScreen.findPreference<Preference>("test_controller_rumble")?.setOnPreferenceClickListener { testControllerRumble(); true }
 	}
 
 	override fun onDestroy()
@@ -157,6 +160,22 @@ class SettingsFragment: PreferenceFragmentCompat(), TitleFragment
 	}
 
 	override fun getTitle(resources: Resources): String = resources.getString(R.string.title_settings)
+
+	private fun testControllerRumble()
+	{
+		val context = context ?: return
+		val controllers = ControllerRumble(context).testControllers(1500)
+		val message = if(controllers.isEmpty())
+			getString(R.string.test_rumble_no_controllers)
+		else
+			controllers.joinToString("\n\n") +
+					(if(controllers.any { it.motors == 0 }) "\n\n" + getString(R.string.test_rumble_unsupported_note) else "")
+		MaterialAlertDialogBuilder(context)
+			.setTitle(R.string.preferences_test_rumble_title)
+			.setMessage(message)
+			.setPositiveButton(android.R.string.ok, null)
+			.show()
+	}
 
 	private fun exportSettings()
 	{

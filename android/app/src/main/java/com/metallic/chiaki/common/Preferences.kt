@@ -172,6 +172,12 @@ class Preferences(context: Context)
 		get() = getMapping("touchpad", 130)
 		set(value) = setMapping("touchpad", value)
 
+	// Last used Fit/Zoom/Stretch mode of the stream, stored as the TransformMode name
+	val streamDisplayModeKey get() = "stream_display_mode"
+	var streamDisplayMode: String?
+		get() = sharedPreferences.getString(streamDisplayModeKey, null)
+		set(value) { sharedPreferences.edit().putString(streamDisplayModeKey, value).apply() }
+
 	val sharpnessIntensityKey get() = "preferences_sharpness_intensity"
 	var sharpnessIntensity: Float
 		get() = sharedPreferences.getInt(sharpnessIntensityKey, 0).toFloat() / 100f

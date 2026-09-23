@@ -25,6 +25,12 @@
             app:summary="@string/preferences_rumble_enabled_summary"
             app:icon="@drawable/ic_rumble" />
 
+        <Preference
+            app:key="test_controller_rumble"
+            app:title="@string/preferences_test_rumble_title"
+            app:summary="@string/preferences_test_rumble_summary"
+            app:icon="@drawable/ic_rumble" />
+
         <SwitchPreference
             app:key="preferences_touchscreen_touchpad_enabled"
             app:title="Touchscreen as Touchpad"

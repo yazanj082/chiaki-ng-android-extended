@@ -5,10 +5,13 @@ package com.metallic.chiaki.stream
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.app.AlertDialog
+import android.content.pm.ActivityInfo
 import android.graphics.Matrix
+import android.hardware.input.InputManager
 import android.os.*
 import android.view.*
 import android.widget.EditText
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isGone
 import androidx.core.view.isVisible
@@ -26,7 +29,6 @@ import com.metallic.chiaki.touchcontrols.DefaultTouchControlsFragment
 import com.metallic.chiaki.touchcontrols.TouchControlsFragment
 import io.reactivex.disposables.CompositeDisposable
 import io.reactivex.rxkotlin.addTo
-import kotlin.math.min
 
 private sealed class DialogContents
 private object StreamQuitDialog: DialogContents()
@@ -63,6 +65,16 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 
 		viewModel.input.observe(this)
 
+		// Locking the orientation in the manifest makes DeX open the stream in a small fixed-size window
+		if(!isDesktopMode())
+			requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+
+		// Use the full screen on phones with a notch/punch hole
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+			window.attributes = window.attributes.also {
+				it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+			}
+
 		binding = ActivityStreamBinding.inflate(layoutInflater)
 		setContentView(binding.root)
 		window.decorView.setOnSystemUiVisibilityChangeListener(this)
@@ -77,7 +89,13 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		}
 
 
-		binding.displayModeToggle.addOnButtonCheckedListener { _, _, _ ->
+		val preferences = viewModel.preferences
+		preferences.streamDisplayMode
+			?.let { mode -> TransformMode.values().firstOrNull { it.name == mode } }
+			?.let { binding.displayModeToggle.check(it.buttonId) }
+		binding.displayModeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+			if(isChecked)
+				preferences.streamDisplayMode = TransformMode.fromButton(checkedId).name
 			adjustStreamViewAspect()
 			showOverlay()
 		}
@@ -101,18 +119,51 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 
 		if(Preferences(this).rumbleEnabled)
 		{
-			val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
+			val rumble = ControllerRumble(this)
+			this.rumble = rumble
+			var cannotVibrateShown = false
 			viewModel.session.rumbleState.observe(this, Observer {
-				val amplitude = min(255, (it.left.toInt() + it.right.toInt()) / 2)
-				vibrator.cancel()
-				if(amplitude == 0)
-					return@Observer
-				if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-					vibrator.vibrate(VibrationEffect.createOneShot(1000, amplitude))
-				else
-					vibrator.vibrate(1000)
+				val controllerId = viewModel.input.lastControllerDeviceId
+				val result = rumble.rumble(controllerId, it.left.toInt(), it.right.toInt())
+				// Tell the user once why nothing happens instead of failing silently
+				if(result == ControllerRumble.Result.CONTROLLER_CANNOT_VIBRATE && !cannotVibrateShown)
+				{
+					cannotVibrateShown = true
+					Toast.makeText(this, getString(R.string.rumble_controller_cannot_vibrate,
+						rumble.controllerName(controllerId) ?: ""), Toast.LENGTH_LONG).show()
+				}
 			})
 		}
+	}
+
+	private var rumble: ControllerRumble? = null
+
+	private val inputDeviceListener = object: InputManager.InputDeviceListener
+	{
+		override fun onInputDeviceAdded(deviceId: Int) {}
+		override fun onInputDeviceRemoved(deviceId: Int) = viewModel.input.forgetInputDevice(deviceId)
+		override fun onInputDeviceChanged(deviceId: Int) = viewModel.input.forgetInputDevice(deviceId)
+	}
+
+	/**
+	 * Samsung DeX, other desktop modes, external displays or multi-window,
+	 * where the stream should be a freely resizable window instead of locked to landscape.
+	 */
+	private fun isDesktopMode(): Boolean
+	{
+		try
+		{
+			val config = resources.configuration
+			val configClass = config.javaClass
+			if(configClass.getField("SEM_DESKTOP_MODE_ENABLED").getInt(null) == configClass.getField("semDesktopModeEnabled").getInt(config))
+				return true
+		}
+		catch(e: Exception) { } // not a Samsung device
+		if(isInMultiWindowMode)
+			return true
+		@Suppress("DEPRECATION")
+		val displayId = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.displayId else windowManager.defaultDisplay.displayId
+		return displayId != null && displayId != Display.DEFAULT_DISPLAY
 	}
 
 	private var debandRenderer: DebandRenderer? = null
@@ -181,6 +232,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		if (Preferences(this).debandingEnabled) {
 			binding.debandSurfaceView.onResume()
 		}
+		(getSystemService(INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputDeviceListener, null)
 		viewModel.session.resume()
 	}
 
@@ -190,12 +242,15 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		if (Preferences(this).debandingEnabled) {
 			binding.debandSurfaceView.onPause()
 		}
+		(getSystemService(INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(inputDeviceListener)
+		rumble?.stop()
 		viewModel.session.pause()
 	}
 
 	override fun onDestroy()
 	{
 		super.onDestroy()
+		rumble?.stop()
 		debandRenderer?.release()
 		controlsDisposable.dispose()
 	}
@@ -206,7 +261,11 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		viewModel.session.resume()
 	}
 
-	private val hideSystemUIRunnable = Runnable { hideSystemUI() }
+	// Also hides the overlay directly, because in DeX windows the system UI visibility callback may never fire
+	private val hideSystemUIRunnable = Runnable {
+		hideSystemUI()
+		hideOverlay()
+	}
 
 	override fun onSystemUiVisibilityChange(visibility: Int)
 	{
@@ -218,6 +277,8 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 
 	private fun showOverlay()
 	{
+		// Mouse cursor is only visible together with the overlay
+		binding.root.pointerIcon = null
 		binding.overlay.isVisible = true
 		binding.overlay.animate()
 			.alpha(1.0f)
@@ -228,12 +289,18 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 					binding.overlay.alpha = 1.0f
 				}
 			})
+		scheduleHideOverlay()
+	}
+
+	private fun scheduleHideOverlay()
+	{
 		uiVisibilityHandler.removeCallbacks(hideSystemUIRunnable)
 		uiVisibilityHandler.postDelayed(hideSystemUIRunnable, HIDE_UI_TIMEOUT_MS)
 	}
 
 	private fun hideOverlay()
 	{
+		binding.root.pointerIcon = PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL)
 		binding.overlay.animate()
 			.alpha(0.0f)
 			.setListener(object: AnimatorListenerAdapter()
@@ -388,6 +455,19 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 
 	override fun dispatchKeyEvent(event: KeyEvent) = viewModel.input.dispatchKeyEvent(event) || super.dispatchKeyEvent(event)
 	override fun onGenericMotionEvent(event: MotionEvent) = viewModel.input.onGenericMotionEvent(event) || super.onGenericMotionEvent(event)
+
+	override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean
+	{
+		// Moving the mouse (e.g. in DeX) brings up the overlay, since there is no system UI swipe there
+		if(event.isFromSource(InputDevice.SOURCE_MOUSE) && event.actionMasked == MotionEvent.ACTION_HOVER_MOVE)
+		{
+			if(!binding.overlay.isVisible || binding.overlay.alpha < 1.0f)
+				showOverlay()
+			else
+				scheduleHideOverlay()
+		}
+		return super.dispatchGenericMotionEvent(event)
+	}
 }
 
 enum class TransformMode
@@ -395,6 +475,13 @@ enum class TransformMode
 	FIT,
 	STRETCH,
 	ZOOM;
+
+	val buttonId get() = when(this)
+	{
+		FIT -> R.id.display_mode_normal_button
+		STRETCH -> R.id.display_mode_stretch_button
+		ZOOM -> R.id.display_mode_zoom_button
+	}
 
 	companion object
 	{
