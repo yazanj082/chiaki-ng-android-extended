@@ -126,16 +126,22 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 			binding.surfaceView.visibility = View.GONE
 			binding.debandSurfaceView.visibility = View.VISIBLE
 			
-			debandRenderer = DebandRenderer { surface ->
+			val videoProfile = viewModel.session.connectInfo.videoProfile
+			debandRenderer = DebandRenderer(videoProfile.width, videoProfile.height, { binding.debandSurfaceView.requestRender() }) { surface ->
 				viewModel.session.attachToSurface(surface)
 			}
-			
+
 			binding.debandSurfaceView.setEGLContextClientVersion(3)
 			binding.debandSurfaceView.setEGLConfigChooser(8, 8, 8, 8, 0, 0)
 			binding.debandSurfaceView.holder.setFormat(android.graphics.PixelFormat.RGBA_8888)
+			// Render the filter at the stream's resolution and let the system scale it to the view.
+			// Otherwise the cost grows with the window (a 1440p/4K monitor in DeX is far too slow and
+			// stalls the video), and every resize or rotation reallocates the render targets.
+			binding.debandSurfaceView.holder.setFixedSize(videoProfile.width, videoProfile.height)
 			binding.debandSurfaceView.setRenderer(debandRenderer)
 			debandRenderer!!.sharpness = prefs.sharpnessIntensity
-			binding.debandSurfaceView.renderMode = android.opengl.GLSurfaceView.RENDERMODE_CONTINUOUSLY
+			// Draw only when the decoder delivers a frame instead of at the display's refresh rate
+			binding.debandSurfaceView.renderMode = android.opengl.GLSurfaceView.RENDERMODE_WHEN_DIRTY
 		} else {
 			// Use standard SurfaceView (no shader processing)
 			binding.surfaceView.visibility = View.VISIBLE

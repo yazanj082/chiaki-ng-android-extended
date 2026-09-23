@@ -11,6 +11,7 @@ import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.atomic.AtomicInteger
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.random.Random
@@ -19,8 +20,12 @@ import kotlin.random.Random
  * GLSurfaceView.Renderer that applies debanding shader to video frames.
  * Uses SurfaceTexture to receive frames from MediaCodec and renders them
  * with a GLSL debanding effect.
+ * Meant to be used with RENDERMODE_WHEN_DIRTY: [requestRender] is called for every new video frame.
  */
 class DebandRenderer(
+    private val videoWidth: Int,
+    private val videoHeight: Int,
+    private val requestRender: () -> Unit,
     private val onSurfaceReady: (Surface) -> Unit
 ) : GLSurfaceView.Renderer, SurfaceTexture.OnFrameAvailableListener {
 
@@ -217,8 +222,12 @@ class DebandRenderer(
     private var screenWidth = 1
     private var screenHeight = 1
 
-    @Volatile
-    private var frameAvailable = false
+    // Size the FBO texture is currently allocated with
+    private var fboWidth = 0
+    private var fboHeight = 0
+
+    // Frames queued by the decoder that have not been latched yet
+    private val pendingFrames = AtomicInteger(0)
     private var frameCount = 0f
 
     init {
@@ -258,7 +267,13 @@ class DebandRenderer(
         fboId = fbos[0]
 
         // 5. Create SurfaceTexture
+        // New GL context: all textures are new, so the FBO texture has to be allocated again
+        fboWidth = 0
+        fboHeight = 0
+        pendingFrames.set(0)
         surfaceTexture = SurfaceTexture(oesTextureId).also {
+            // Buffers must have the video's size, not the screen's, and must not change while decoding
+            it.setDefaultBufferSize(videoWidth, videoHeight)
             it.setOnFrameAvailableListener(this)
             surface = Surface(it)
             onSurfaceReady(surface!!)
@@ -278,8 +293,13 @@ class DebandRenderer(
         GLES30.glViewport(0, 0, width, height)
         screenWidth = width
         screenHeight = height
-        surfaceTexture?.setDefaultBufferSize(width, height)
-        
+
+        // Only reallocate the FBO when the size actually changed
+        if (width == fboWidth && height == fboHeight)
+            return
+        fboWidth = width
+        fboHeight = height
+
         // Resize FBO texture
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTextureId)
         GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA8, width, height, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
@@ -294,10 +314,15 @@ class DebandRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        if (frameAvailable) {
-            surfaceTexture?.updateTexImage()
-            surfaceTexture?.getTransformMatrix(stMatrix)
-            frameAvailable = false
+        // Latch every frame queued since the last draw, so the newest one is shown and all
+        // older buffers go back to the decoder. Latching only one per draw lets a backlog build
+        // up until the decoder runs out of buffers and the video stalls.
+        val pending = pendingFrames.getAndSet(0)
+        if (pending > 0) {
+            surfaceTexture?.let {
+                repeat(pending) { _ -> it.updateTexImage() }
+                it.getTransformMatrix(stMatrix)
+            }
         }
 
         // --- PASS 1: OES to FBO ---
@@ -348,7 +373,8 @@ class DebandRenderer(
     }
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
-        frameAvailable = true
+        pendingFrames.incrementAndGet()
+        requestRender()
     }
 
     fun release() {
