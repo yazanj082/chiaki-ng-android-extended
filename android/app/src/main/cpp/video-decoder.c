@@ -47,9 +47,12 @@ static void kill_decoder(AndroidChiakiVideoDecoder *decoder) {
     AMediaCodec_stop(decoder->codec);
     chiaki_mutex_unlock(&decoder->codec_mutex);
   }
+  // Under the lock so video_sample() never sees a deleted codec
+  chiaki_mutex_lock(&decoder->codec_mutex);
   AMediaCodec_delete(decoder->codec);
   decoder->codec = NULL;
   decoder->shutdown_output = false;
+  chiaki_mutex_unlock(&decoder->codec_mutex);
 }
 
 void android_chiaki_video_decoder_fini(AndroidChiakiVideoDecoder *decoder) {
@@ -64,10 +67,17 @@ void android_chiaki_video_decoder_set_surface(
 
   if (!surface) {
     if (decoder->codec) {
+      // kill_decoder() locks codec_mutex itself and the mutex is not recursive
+      chiaki_mutex_unlock(&decoder->codec_mutex);
       kill_decoder(decoder);
+      chiaki_mutex_lock(&decoder->codec_mutex);
+      if (decoder->window) {
+        ANativeWindow_release(decoder->window);
+        decoder->window = NULL;
+      }
       CHIAKI_LOGI(decoder->log, "Decoder shut down after surface was removed");
     }
-    return;
+    goto beach;
   }
 
   if (decoder->codec) {
