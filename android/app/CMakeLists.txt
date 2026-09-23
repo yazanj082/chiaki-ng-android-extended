@@ -22,4 +22,6 @@ find_library(ANDROID_LIB_ANDROID android)
 target_link_libraries(chiaki-jni "${ANDROID_LIB_LOG}" "${ANDROID_LIB_MEDIANDK}" "${ANDROID_LIB_ANDROID}")
 
 add_subdirectory(src/main/cpp/oboe)
+# The pinned oboe version uses assert() in its resampler without including <cassert>, which newer NDKs reject
+target_compile_options(oboe PRIVATE -include cassert)
 target_link_libraries(chiaki-jni oboe)
