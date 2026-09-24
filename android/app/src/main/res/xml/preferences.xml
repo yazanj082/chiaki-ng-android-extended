@@ -37,6 +37,12 @@
             app:summary="@string/preferences_dualsense_enabled_summary"
             app:icon="@drawable/ic_rumble" />
 
+        <SwitchPreference
+            app:key="@string/preferences_controller_headphones_key"
+            app:title="@string/preferences_controller_headphones_title"
+            app:summary="@string/preferences_controller_headphones_summary"
+            app:icon="@drawable/ic_headset" />
+
         <Preference
             app:key="test_controller_rumble"
             app:title="@string/preferences_test_rumble_title"

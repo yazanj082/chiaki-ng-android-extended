@@ -100,6 +100,11 @@ class Preferences(context: Context)
 		get() = sharedPreferences.getBoolean(dualSenseEnabledKey, true)
 		set(value) { sharedPreferences.edit().putBoolean(dualSenseEnabledKey, value).apply() }
 
+	val controllerHeadphonesKey get() = resources.getString(R.string.preferences_controller_headphones_key)
+	var controllerHeadphones
+		get() = sharedPreferences.getBoolean(controllerHeadphonesKey, false)
+		set(value) { sharedPreferences.edit().putBoolean(controllerHeadphonesKey, value).apply() }
+
 	val motionEnabledKey get() = resources.getString(R.string.preferences_motion_enabled_key)
 	var motionEnabled
 		get() = sharedPreferences.getBoolean(motionEnabledKey, true)

@@ -22,6 +22,7 @@
 #include "video-decoder.h"
 #include "audio-decoder.h"
 #include "audio-output.h"
+#include "haptics-output.h"
 #include "log.h"
 #include "chiaki-jni.h"
 
@@ -169,6 +170,7 @@ typedef struct android_chiaki_session_t
 	AndroidChiakiVideoDecoder video_decoder;
 	AndroidChiakiAudioDecoder audio_decoder;
 	void *audio_output;
+	void *haptics_output;
 
 	// Motion of the physical controller, see sessionSetMotion()
 	ChiakiOrientationTracker orient_tracker;
@@ -201,8 +203,9 @@ static void android_chiaki_cant_display_cb(void *user, bool cant_display)
 #define HAPTICS_RUMBLE_INTERVAL_US 16000
 
 /**
- * The console streams DualSense haptics as 3 kHz stereo PCM. Android can't play that on
- * the controller's voice coil actuators, so it drives the rumble motors instead,
+ * The console streams DualSense haptics as 3 kHz stereo PCM. With the DualSense on USB,
+ * they are played on its voice coil actuators, see haptics-output.h.
+ * Otherwise Android can't do that, so they drive the rumble motors instead,
  * following the loudness of each channel.
  */
 static void android_chiaki_haptics_frame_cb(uint8_t *buf, size_t buf_size, void *user)
@@ -212,6 +215,11 @@ static void android_chiaki_haptics_frame_cb(uint8_t *buf, size_t buf_size, void 
 	{
 		session->haptics_logged = true;
 		CHIAKI_LOGI(session->log, "Receiving DualSense haptics, %zu bytes per frame", buf_size);
+	}
+	if(android_chiaki_haptics_output_active(session->haptics_output))
+	{
+		android_chiaki_haptics_output_frame(buf, buf_size, session->haptics_output);
+		return;
 	}
 	size_t samples = buf_size / (2 * sizeof(int16_t));
 	if(!samples)
@@ -290,6 +298,9 @@ static void android_chiaki_event_cb(ChiakiEvent *event, void *user)
 				session->rumble_logged = true;
 				CHIAKI_LOGI(session->log, "Receiving rumble");
 			}
+			android_chiaki_haptics_output_rumble(event->rumble.left, event->rumble.right, session->haptics_output);
+			if(android_chiaki_haptics_output_active(session->haptics_output))
+				break;
 			E->CallVoidMethod(env, session->java_session,
 							  session->java_session_event_rumble_meth,
 							  (jint)event->rumble.left,
@@ -316,6 +327,7 @@ static void android_chiaki_event_cb(ChiakiEvent *event, void *user)
 							  (jint)event->led_state[2]);
 			break;
 		case CHIAKI_EVENT_HAPTIC_INTENSITY:
+			android_chiaki_haptics_output_intensity((int)event->intensity, session->haptics_output);
 			E->CallVoidMethod(env, session->java_session,
 							  session->java_session_event_haptic_intensity_meth,
 							  (jint)event->intensity);
@@ -431,6 +443,7 @@ JNIEXPORT void JNICALL JNI_FCN(sessionCreate)(JNIEnv *env, jobject obj, jobject 
 	}
 
 	session->audio_output = android_chiaki_audio_output_new(log);
+	session->haptics_output = android_chiaki_haptics_output_new(log);
 
 	android_chiaki_audio_decoder_set_cb(&session->audio_decoder, android_chiaki_audio_output_settings, android_chiaki_audio_output_frame, session->audio_output);
 
@@ -441,6 +454,7 @@ JNIEXPORT void JNICALL JNI_FCN(sessionCreate)(JNIEnv *env, jobject obj, jobject 
 		android_chiaki_video_decoder_fini(&session->video_decoder);
 		android_chiaki_audio_decoder_fini(&session->audio_decoder);
 		android_chiaki_audio_output_free(session->audio_output);
+		android_chiaki_haptics_output_free(session->haptics_output);
 		free(session);
 		session = NULL;
 		goto beach;
@@ -531,6 +545,7 @@ JNIEXPORT void JNICALL JNI_FCN(sessionFree)(JNIEnv *env, jobject obj, jlong ptr)
 	android_chiaki_video_decoder_fini(&session->video_decoder);
 	android_chiaki_audio_decoder_fini(&session->audio_decoder);
 	android_chiaki_audio_output_free(session->audio_output);
+	android_chiaki_haptics_output_free(session->haptics_output);
 	E->DeleteGlobalRef(env, session->java_session);
 	E->DeleteGlobalRef(env, session->java_session_class);
 	CHIAKI_LOGI(session->log, "JNI Session has quit");
@@ -627,6 +642,12 @@ JNIEXPORT void JNICALL JNI_FCN(sessionSetAudioDevice)(JNIEnv *env, jobject obj, 
 {
 	AndroidChiakiSession *session = (AndroidChiakiSession *)ptr;
 	android_chiaki_audio_output_set_device((int32_t)device_id, session->audio_output);
+}
+
+JNIEXPORT void JNICALL JNI_FCN(sessionSetHapticsDevice)(JNIEnv *env, jobject obj, jlong ptr, jint device_id)
+{
+	AndroidChiakiSession *session = (AndroidChiakiSession *)ptr;
+	android_chiaki_haptics_output_set_device((int32_t)device_id, session->haptics_output);
 }
 
 JNIEXPORT void JNICALL JNI_FCN(sessionSetLoginPin)(JNIEnv *env, jobject obj, jlong ptr, jstring pin_java)

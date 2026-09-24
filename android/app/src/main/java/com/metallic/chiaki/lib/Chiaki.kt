@@ -96,6 +96,7 @@ private class ChiakiNative
 		@JvmStatic external fun sessionSetControllerState(ptr: Long, controllerState: ControllerState)
 		@JvmStatic external fun sessionSetMotion(ptr: Long, gyroX: Float, gyroY: Float, gyroZ: Float, accelX: Float, accelY: Float, accelZ: Float, timestampUs: Int)
 		@JvmStatic external fun sessionSetAudioDevice(ptr: Long, deviceId: Int)
+		@JvmStatic external fun sessionSetHapticsDevice(ptr: Long, deviceId: Int)
 		@JvmStatic external fun sessionSetLoginPin(ptr: Long, pin: String)
 		@JvmStatic external fun discoveryServiceCreate(result: CreateResult, options: DiscoveryServiceOptions, javaService: DiscoveryService)
 		@JvmStatic external fun discoveryServiceFree(ptr: Long)
@@ -464,6 +465,14 @@ class Session(connectInfo: ConnectInfo, logFile: String?, logVerbose: Boolean)
 	fun setAudioDevice(deviceId: Int)
 	{
 		ChiakiNative.sessionSetAudioDevice(nativePtr, deviceId)
+	}
+
+	/**
+	 * @param deviceId [android.media.AudioDeviceInfo.getId] of a DualSense's USB audio to play the haptics on, 0 for none
+	 */
+	fun setHapticsDevice(deviceId: Int)
+	{
+		ChiakiNative.sessionSetHapticsDevice(nativePtr, deviceId)
 	}
 }
 

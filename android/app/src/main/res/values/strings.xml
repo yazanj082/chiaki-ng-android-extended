@@ -111,6 +111,8 @@
     <string name="action_android_settings">Android Settings</string>
     <string name="preferences_dualsense_enabled_title">DualSense Features (PS5)</string>
     <string name="preferences_dualsense_enabled_summary">Adaptive triggers, lightbar and haptics, which are played as vibration. Adaptive triggers need a DualSense and access to its HID device</string>
+    <string name="preferences_controller_headphones_title">Headphones on the Controller</string>
+    <string name="preferences_controller_headphones_summary">Play the sound on headphones plugged into a DualSense or DualShock 4 connected by USB. Otherwise it plays on the TV, or the phone\'s speaker</string>
     <string name="preferences_button_haptic_enabled_title">Touch Haptics</string>
     <string name="preferences_button_haptic_enabled_summary">Use phone vibration motor for short haptic feedback on button touches</string>
     <string name="alert_message_delete_registered_host">Are you sure you want to delete the registered console %s with ID %s?</string>
@@ -129,6 +131,7 @@
     <string name="preferences_rumble_enabled_key">rumble_enabled</string>
     <string name="preferences_motion_enabled_key">motion_enabled</string>
     <string name="preferences_dualsense_enabled_key">dualsense_enabled</string>
+    <string name="preferences_controller_headphones_key">controller_headphones</string>
     <string name="preferences_home_screen_key">home_screen</string>
     <string name="preferences_button_haptic_enabled_key">button_haptic_enabled</string>
     <string name="preferences_log_verbose_key">log_verbose</string>
