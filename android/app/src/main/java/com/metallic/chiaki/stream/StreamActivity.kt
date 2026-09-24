@@ -67,6 +67,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		})[StreamViewModel::class.java]
 
 		viewModel.input.observe(this)
+		viewModel.setControllerConnected(isControllerConnected())
 
 		// Locking the orientation in the manifest makes DeX open the stream in a small fixed-size window
 		if(!isDesktopMode())
@@ -91,7 +92,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		setContentView(binding.root)
 		window.decorView.setOnSystemUiVisibilityChangeListener(this)
 
-		viewModel.onScreenControlsEnabled.observe(this, Observer {
+		viewModel.onScreenControlsVisible.observe(this, Observer {
 			if(binding.onScreenControlsSwitch.isChecked != it)
 				binding.onScreenControlsSwitch.isChecked = it
 		})
@@ -174,6 +175,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		{
 			viewModel.input.onInputDevicesChanged()
 			viewModel.session.onInputDevicesChanged()
+			viewModel.setControllerConnected(isControllerConnected())
 			if(hasWindowFocus())
 				updatePointerCapture()
 		}
@@ -234,7 +236,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 					updateCombinedTouchState()
 				}
 				.addTo(controlsDisposable)
-			fragment.onScreenControlsEnabled = viewModel.onScreenControlsEnabled
+			fragment.onScreenControlsEnabled = viewModel.onScreenControlsVisible
 		}
 	}
 
@@ -433,7 +435,7 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 	private var streamMenuHintShown = false
 
 	private fun isControllerConnected() = InputDevice.getDeviceIds().any { id ->
-		InputDevice.getDevice(id)?.let { it.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD } ?: false
+		InputDevice.getDevice(id)?.let { !it.isVirtual && it.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD } ?: false
 	}
 
 	private fun stateChanged(state: StreamState)

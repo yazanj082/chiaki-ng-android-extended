@@ -21,6 +21,7 @@ Basically debanding is already implemented in chiaki-ng for Steam Deck and Windo
   - **Haptic Feedback**: Support for rumble and touch haptics.
 - **DualSense Features (PS5)**: PS5 haptics are played as rumble, and the controller's own gyroscope and touchpad are used (Android 12+). Adaptive triggers and the lightbar work where the app can access the controller's HID device (see the Orange Pi image below).
 - **TV Boxes**: Controller-friendly UI with Android TV launcher support, 1080p and no touch controls by default on devices without a touchscreen, and TV game mode (ALLM) while streaming. Press **L1 + R1 + Options + Create** together to open the stream menu and quit with just a controller. Selecting a console in rest mode wakes it up and connects as soon as it's ready. Optionally make Chiaki the home screen.
+- **Samsung DeX**: The stream fills the whole TV or monitor, without the DeX window bar, and uses the phone's low latency Wi-Fi mode. On-screen controls are hidden while a controller is connected (they can still be turned on from the stream overlay).
 - **Performance Optimized**: Low-latency streaming optimized for Android NDK, with MediaCodec's low latency mode (e.g. ~5 ms to decode a 1080p60 frame on an RK3588).
 
 ## Orange Pi 5 Pro Image

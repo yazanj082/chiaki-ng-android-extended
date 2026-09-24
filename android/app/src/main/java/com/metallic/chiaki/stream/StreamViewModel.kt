@@ -19,8 +19,15 @@ class StreamViewModel(val application: Application, val connectInfo: ConnectInfo
 	val input = StreamInput(application, preferences)
 	val session = StreamSession(connectInfo, logManager, preferences.logVerbose, input)
 
-	private var _onScreenControlsEnabled = MutableLiveData<Boolean>(preferences.onScreenControlsEnabled)
-	val onScreenControlsEnabled: LiveData<Boolean> get() = _onScreenControlsEnabled
+	private var controllerConnected = false
+	// Turned on explicitly while a controller is connected, only for this stream
+	private var onScreenControlsWithController = false
+
+	private var _onScreenControlsVisible = MutableLiveData<Boolean>(preferences.onScreenControlsEnabled)
+	/**
+	 * Hidden while a physical controller is connected, e.g. in DeX, where the stream is on a TV that can't be touched
+	 */
+	val onScreenControlsVisible: LiveData<Boolean> get() = _onScreenControlsVisible
 
 
 	override fun onCleared()
@@ -31,8 +38,24 @@ class StreamViewModel(val application: Application, val connectInfo: ConnectInfo
 
 	fun setOnScreenControlsEnabled(enabled: Boolean)
 	{
-		preferences.onScreenControlsEnabled = enabled
-		_onScreenControlsEnabled.value = enabled
+		if(controllerConnected)
+			onScreenControlsWithController = enabled
+		else
+			preferences.onScreenControlsEnabled = enabled
+		updateOnScreenControlsVisible()
+	}
+
+	fun setControllerConnected(connected: Boolean)
+	{
+		controllerConnected = connected
+		updateOnScreenControlsVisible()
+	}
+
+	private fun updateOnScreenControlsVisible()
+	{
+		val visible = if(controllerConnected) onScreenControlsWithController else preferences.onScreenControlsEnabled
+		if(_onScreenControlsVisible.value != visible)
+			_onScreenControlsVisible.value = visible
 	}
 
 }
