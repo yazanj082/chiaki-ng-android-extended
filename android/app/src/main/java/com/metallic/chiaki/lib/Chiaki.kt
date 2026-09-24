@@ -95,6 +95,7 @@ private class ChiakiNative
 		@JvmStatic external fun sessionSetSurface(ptr: Long, surface: Surface?)
 		@JvmStatic external fun sessionSetControllerState(ptr: Long, controllerState: ControllerState)
 		@JvmStatic external fun sessionSetMotion(ptr: Long, gyroX: Float, gyroY: Float, gyroZ: Float, accelX: Float, accelY: Float, accelZ: Float, timestampUs: Int)
+		@JvmStatic external fun sessionSetAudioDevice(ptr: Long, deviceId: Int)
 		@JvmStatic external fun sessionSetLoginPin(ptr: Long, pin: String)
 		@JvmStatic external fun discoveryServiceCreate(result: CreateResult, options: DiscoveryServiceOptions, javaService: DiscoveryService)
 		@JvmStatic external fun discoveryServiceFree(ptr: Long)
@@ -455,6 +456,14 @@ class Session(connectInfo: ConnectInfo, logFile: String?, logVerbose: Boolean)
 	fun setMotion(gyroX: Float, gyroY: Float, gyroZ: Float, accelX: Float, accelY: Float, accelZ: Float, timestampUs: Int)
 	{
 		ChiakiNative.sessionSetMotion(nativePtr, gyroX, gyroY, gyroZ, accelX, accelY, accelZ, timestampUs)
+	}
+
+	/**
+	 * @param deviceId [android.media.AudioDeviceInfo.getId] to play the audio on, 0 for the system's choice
+	 */
+	fun setAudioDevice(deviceId: Int)
+	{
+		ChiakiNative.sessionSetAudioDevice(nativePtr, deviceId)
 	}
 }
 

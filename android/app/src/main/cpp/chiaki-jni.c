@@ -623,6 +623,12 @@ JNIEXPORT void JNICALL JNI_FCN(sessionSetMotion)(JNIEnv *env, jobject obj, jlong
 	session->orient_tracker_active = true;
 }
 
+JNIEXPORT void JNICALL JNI_FCN(sessionSetAudioDevice)(JNIEnv *env, jobject obj, jlong ptr, jint device_id)
+{
+	AndroidChiakiSession *session = (AndroidChiakiSession *)ptr;
+	android_chiaki_audio_output_set_device((int32_t)device_id, session->audio_output);
+}
+
 JNIEXPORT void JNICALL JNI_FCN(sessionSetLoginPin)(JNIEnv *env, jobject obj, jlong ptr, jstring pin_java)
 {
 	AndroidChiakiSession *session = (AndroidChiakiSession *)ptr;

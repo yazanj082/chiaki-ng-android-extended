@@ -44,6 +44,8 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 		updateRumble()
 	}
 
+	private val audioRouting = AudioRouting(input.context) { session?.setAudioDevice(it) }
+
 	private var surfaceTexture: SurfaceTexture? = null
 	private var surface: Surface? = null
 
@@ -78,6 +80,7 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 	{
 		shutdown()
 		dualSenseFeedback?.close()
+		audioRouting.close()
 	}
 
 	fun onInputDevicesChanged()
@@ -117,6 +120,7 @@ class StreamSession(val connectInfo: ConnectInfo, val logManager: LogManager, va
 			val session = Session(connectInfo, logManager.createNewFile().file.absolutePath, logVerbose)
 			_state.value = StreamStateConnecting
 			session.eventCallback = this::eventCallback
+			session.setAudioDevice(audioRouting.deviceId)
 			session.start()
 			val surface = surface
 			if(surface != null)
