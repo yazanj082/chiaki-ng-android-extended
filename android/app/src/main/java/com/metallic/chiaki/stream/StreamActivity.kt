@@ -174,6 +174,8 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		{
 			viewModel.input.onInputDevicesChanged()
 			viewModel.session.onInputDevicesChanged()
+			if(hasWindowFocus())
+				updatePointerCapture()
 		}
 	}
 
@@ -351,7 +353,28 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 	{
 		super.onWindowFocusChanged(hasFocus)
 		if(hasFocus)
+		{
 			hideSystemUI()
+			updatePointerCapture()
+		}
+	}
+
+	/**
+	 * While captured, Android reports a controller touchpad that it otherwise makes a mouse
+	 * pointer with its real finger positions, so they can be forwarded to the console.
+	 * Only done while such a controller is connected, as it also captures a real mouse.
+	 */
+	private fun updatePointerCapture()
+	{
+		val root = binding.root
+		if(viewModel.input.isPointerTouchpadConnected())
+		{
+			root.setOnCapturedPointerListener { _, event -> viewModel.input.onCapturedPointerEvent(event) }
+			if(!root.hasPointerCapture())
+				root.requestPointerCapture()
+		}
+		else if(root.hasPointerCapture())
+			root.releasePointerCapture()
 	}
 
 	private fun hideSystemUI()

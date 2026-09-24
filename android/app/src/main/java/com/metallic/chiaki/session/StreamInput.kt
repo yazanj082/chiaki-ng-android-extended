@@ -406,6 +406,24 @@ class StreamInput(val context: Context, val preferences: Preferences)
 	 * mouse pointer. Its clicks are then the touchpad button, and its pointer is ignored.
 	 * @return whether the event came from such a touchpad
 	 */
+	/**
+	 * A DualSense/DualShock 4 whose touchpad Android made a mouse pointer.
+	 */
+	fun isPointerTouchpadConnected() = InputDevice.getDeviceIds().any { id ->
+		InputDevice.getDevice(id)?.let {
+			it.vendorId == VENDOR_ID_SONY && it.sources and InputDevice.SOURCE_MOUSE == InputDevice.SOURCE_MOUSE
+		} ?: false
+	}
+
+	/**
+	 * Events while the pointer is captured: a touchpad then reports absolute finger positions.
+	 */
+	fun onCapturedPointerEvent(event: MotionEvent): Boolean =
+		if(event.isFromSource(InputDevice.SOURCE_TOUCHPAD) && event.device?.vendorId == VENDOR_ID_SONY)
+			onTouchpadEvent(event)
+		else
+			true // a real mouse, which does nothing in the stream
+
 	fun onControllerPointerEvent(event: MotionEvent): Boolean
 	{
 		if(!event.isFromSource(InputDevice.SOURCE_MOUSE) || event.device?.vendorId != VENDOR_ID_SONY)

@@ -180,6 +180,7 @@ typedef struct android_chiaki_session_t
 	uint8_t haptics_peak_left, haptics_peak_right;
 	uint8_t haptics_sent_left, haptics_sent_right;
 	uint64_t haptics_sent_us;
+	bool haptics_logged, rumble_logged;
 } AndroidChiakiSession;
 
 /**
@@ -207,6 +208,11 @@ static void android_chiaki_cant_display_cb(void *user, bool cant_display)
 static void android_chiaki_haptics_frame_cb(uint8_t *buf, size_t buf_size, void *user)
 {
 	AndroidChiakiSession *session = user;
+	if(!session->haptics_logged)
+	{
+		session->haptics_logged = true;
+		CHIAKI_LOGI(session->log, "Receiving DualSense haptics, %zu bytes per frame", buf_size);
+	}
 	size_t samples = buf_size / (2 * sizeof(int16_t));
 	if(!samples)
 		return;
@@ -279,6 +285,11 @@ static void android_chiaki_event_cb(ChiakiEvent *event, void *user)
 			break;
 		}
 		case CHIAKI_EVENT_RUMBLE:
+			if(!session->rumble_logged)
+			{
+				session->rumble_logged = true;
+				CHIAKI_LOGI(session->log, "Receiving rumble");
+			}
 			E->CallVoidMethod(env, session->java_session,
 							  session->java_session_event_rumble_meth,
 							  (jint)event->rumble.left,
