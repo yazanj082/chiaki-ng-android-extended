@@ -370,6 +370,10 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		if(viewModel.input.isPointerTouchpadConnected())
 		{
 			root.setOnCapturedPointerListener { _, event -> viewModel.input.onCapturedPointerEvent(event) }
+			// Captured events go to the focused view
+			root.isFocusable = true
+			root.isFocusableInTouchMode = true
+			root.requestFocus()
 			if(!root.hasPointerCapture())
 				root.requestPointerCapture()
 		}

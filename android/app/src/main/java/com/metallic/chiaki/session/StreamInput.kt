@@ -418,11 +418,20 @@ class StreamInput(val context: Context, val preferences: Preferences)
 	/**
 	 * Events while the pointer is captured: a touchpad then reports absolute finger positions.
 	 */
-	fun onCapturedPointerEvent(event: MotionEvent): Boolean =
-		if(event.isFromSource(InputDevice.SOURCE_TOUCHPAD) && event.device?.vendorId == VENDOR_ID_SONY)
+	fun onCapturedPointerEvent(event: MotionEvent): Boolean
+	{
+		if(!capturedEventLogged)
+		{
+			capturedEventLogged = true
+			android.util.Log.i("StreamInput", "Captured pointer: source=0x${Integer.toHexString(event.source)} device=${event.device?.name}")
+		}
+		return if(event.isFromSource(InputDevice.SOURCE_TOUCHPAD) && event.device?.vendorId == VENDOR_ID_SONY)
 			onTouchpadEvent(event)
 		else
 			true // a real mouse, which does nothing in the stream
+	}
+
+	private var capturedEventLogged = false
 
 	fun onControllerPointerEvent(event: MotionEvent): Boolean
 	{
