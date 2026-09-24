@@ -4,6 +4,7 @@ package com.metallic.chiaki.main
 
 import android.app.ActivityOptions
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -205,7 +206,16 @@ class MainActivity : AppCompatActivity()
 					enableDualSense = host.isPS5 && preferences.dualSenseEnabled)
 				Intent(this, StreamActivity::class.java).let {
 					it.putExtra(StreamActivity.EXTRA_CONNECT_INFO, connectInfo)
-					startActivity(it)
+					// Empty bounds open the stream full screen in Samsung DeX, without the window's title bar.
+					// Launch bounds only apply to new tasks, so the stream gets its own window there.
+					val options = if(isSamsungDex())
+					{
+						it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+						ActivityOptions.makeBasic().setLaunchBounds(Rect()).toBundle()
+					}
+					else
+						null
+					startActivity(it, options)
 				}
 			}
 

@@ -84,7 +84,9 @@ class DebandRenderer(
 
             // Stochastic Debanding v2 Parameters
             const float DEBAND_THRESHOLD = 0.02;   // Sensitivity to banding steps (lower = safer for textures)
-            const int NUM_SAMPLES = 24;            // More samples = smoother gradients
+            // 12 jittered samples on a golden angle spiral smooth gradients as well as 24 did,
+            // at half the cost, which keeps 60 fps on throttled phones (e.g. in Samsung DeX)
+            const int NUM_SAMPLES = 12;
             const float MAX_RADIUS = 24.0;         // Effective sampling radius
             const float GRAIN_STRENGTH = 0.003;    // Slightly reduced grain
 
@@ -114,13 +116,16 @@ class DebandRenderer(
                 float noise = ign(v_TexCoord);
                 float timeSeed = fract(u_Time * 0.1);
                 
+                // The spiral is rotated per pixel instead of computing sin/cos for every sample:
+                // one rotation by noise * golden angle, then a fixed golden angle step per sample
+                float startAngle = noise * 2.3999632;
+                vec2 dir = vec2(cos(startAngle), sin(startAngle));
+                const vec2 goldenStep = vec2(-0.7373688, 0.6754903); // cos/sin of the golden angle
                 for (int i = 0; i < NUM_SAMPLES; i++) {
-                    // Generate pseudo-random angle and radius
                     float fi = float(i);
-                    float angle = (fi + noise) * 2.3999632; // Golden angle for distribution
                     float r = sqrt((fi + 0.5) / float(NUM_SAMPLES)) * MAX_RADIUS;
-                    
-                    vec2 offset = vec2(cos(angle), sin(angle)) * r * texelSize;
+                    vec2 offset = dir * r * texelSize;
+                    dir = vec2(dir.x * goldenStep.x - dir.y * goldenStep.y, dir.x * goldenStep.y + dir.y * goldenStep.x);
                     vec3 s = texture(u_Texture, clamp(v_TexCoord + offset, 0.0, 1.0)).rgb;
                     
                     // Difference check: only average pixels that could be part of the same gradient
@@ -140,13 +145,13 @@ class DebandRenderer(
                 // RCAS (Robust Contrast Adaptive Sharpening)
                 // ═══════════════════════════════════════════════════════════════
                 
-                // Sample neighbors from the original texture for better edge detection
-                vec3 b = texture(u_Texture, v_TexCoord + vec2(0.0, -texelSize.y)).rgb;
-                vec3 d = texture(u_Texture, v_TexCoord + vec2(-texelSize.x, 0.0)).rgb;
-                vec3 f = texture(u_Texture, v_TexCoord + vec2(texelSize.x, 0.0)).rgb;
-                vec3 h = texture(u_Texture, v_TexCoord + vec2(0.0, texelSize.y)).rgb;
-                
                 if (u_Sharpness > 0.0) {
+                    // Sample neighbors from the original texture for better edge detection
+                    vec3 b = texture(u_Texture, v_TexCoord + vec2(0.0, -texelSize.y)).rgb;
+                    vec3 d = texture(u_Texture, v_TexCoord + vec2(-texelSize.x, 0.0)).rgb;
+                    vec3 f = texture(u_Texture, v_TexCoord + vec2(texelSize.x, 0.0)).rgb;
+                    vec3 h = texture(u_Texture, v_TexCoord + vec2(0.0, texelSize.y)).rgb;
+
                     // Increased peak for more "bite"
                     float peak = -1.0 / mix(8.0, 4.0, u_Sharpness);
                     vec3 e = color;

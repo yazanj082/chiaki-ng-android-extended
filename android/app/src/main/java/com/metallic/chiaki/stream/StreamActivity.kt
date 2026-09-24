@@ -7,6 +7,7 @@ import android.animation.AnimatorListenerAdapter
 import android.content.pm.ActivityInfo
 import android.graphics.Matrix
 import android.hardware.input.InputManager
+import android.net.wifi.WifiManager
 import android.os.*
 import android.view.*
 import android.widget.EditText
@@ -20,6 +21,7 @@ import androidx.lifecycle.*
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.metallic.chiaki.R
 import com.metallic.chiaki.common.Preferences
+import com.metallic.chiaki.common.isDesktopMode
 import com.metallic.chiaki.common.ext.viewModelFactory
 import com.metallic.chiaki.databinding.ActivityStreamBinding
 import com.metallic.chiaki.lib.ConnectInfo
@@ -81,6 +83,9 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		// Ask TVs to switch to their low latency game mode (ALLM) over HDMI
 		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
 			window.setPreferMinimalPostProcessing(true)
+		// Steady clocks instead of full speed until the phone gets hot and throttles hard
+		if((getSystemService(POWER_SERVICE) as PowerManager).isSustainedPerformanceModeSupported)
+			window.setSustainedPerformanceMode(true)
 
 		binding = ActivityStreamBinding.inflate(layoutInflater)
 		setContentView(binding.root)
@@ -172,27 +177,6 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		}
 	}
 
-	/**
-	 * Samsung DeX, other desktop modes, external displays or multi-window,
-	 * where the stream should be a freely resizable window instead of locked to landscape.
-	 */
-	private fun isDesktopMode(): Boolean
-	{
-		try
-		{
-			val config = resources.configuration
-			val configClass = config.javaClass
-			if(configClass.getField("SEM_DESKTOP_MODE_ENABLED").getInt(null) == configClass.getField("semDesktopModeEnabled").getInt(config))
-				return true
-		}
-		catch(e: Exception) { } // not a Samsung device
-		if(isInMultiWindowMode)
-			return true
-		@Suppress("DEPRECATION")
-		val displayId = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.displayId else windowManager.defaultDisplay.displayId
-		return displayId != null && displayId != Display.DEFAULT_DISPLAY
-	}
-
 	private var debandRenderer: DebandRenderer? = null
 
 	private fun setupVideoOutput() {
@@ -261,7 +245,27 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 		}
 		(getSystemService(INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputDeviceListener, null)
 		viewModel.input.menuComboCallback = { showStreamMenu() }
+		acquireWifiLock()
 		viewModel.session.resume()
+	}
+
+	private var wifiLock: WifiManager.WifiLock? = null
+
+	/**
+	 * Keeps Wi-Fi out of power saving and background scans while streaming,
+	 * which otherwise cause latency spikes and lost frames, especially with a weak signal.
+	 */
+	private fun acquireWifiLock()
+	{
+		if(wifiLock != null)
+			return
+		val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+		@Suppress("DEPRECATION")
+		val mode = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+		wifiLock = wifiManager.createWifiLock(mode, "Chiaki:stream").also {
+			it.setReferenceCounted(false)
+			it.acquire()
+		}
 	}
 
 	override fun onPause()
@@ -271,6 +275,8 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 			binding.debandSurfaceView.onPause()
 		}
 		viewModel.input.menuComboCallback = null
+		wifiLock?.release()
+		wifiLock = null
 		(getSystemService(INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(inputDeviceListener)
 		rumble?.stop()
 		viewModel.session.pause()
@@ -356,6 +362,12 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 				or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
 				or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
 				or View.SYSTEM_UI_FLAG_FULLSCREEN)
+		// Desktop modes like Samsung DeX also give the window a caption bar, which only a
+		// full screen window may hide
+		@Suppress("DEPRECATION")
+		window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+		if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+			window.insetsController?.hide(WindowInsets.Type.systemBars() or WindowInsets.Type.captionBar())
 	}
 
 	private var dialogContents: DialogContents? = null

@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <!-- Low latency Wi-Fi while streaming -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Also for TV boxes, played with a controller -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -26,6 +28,9 @@
 
         <!-- Samsung DeX: keep the app alive when switching between phone and DeX -->
         <meta-data android:name="com.samsung.android.keepalive.density" android:value="true" />
+        <!-- Samsung DeX: only show the translucent title and task bars of full screen apps
+             once the pointer rests at the edge of the screen -->
+        <meta-data android:name="com.samsung.android.dex.transient_bar_delay" android:value="1500" />
 
         <provider
             android:authorities="com.metallic.chiaki.fileprovider"
@@ -66,9 +71,14 @@
              the stream running when the window is resized or a controller (dis)connects. -->
         <activity
             android:name=".stream.StreamActivity"
+            android:taskAffinity=".stream"
             android:theme="@style/StreamTheme"
             android:resizeableActivity="true"
-            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|screenLayout|uiMode"/>
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|screenLayout|uiMode">
+            <!-- Samsung DeX: open full screen, without the window's title bar -->
+            <meta-data android:name="com.samsung.android.dex.launchwidth" android:value="0" />
+            <meta-data android:name="com.samsung.android.dex.launchheight" android:value="0" />
+        </activity>
 
         <activity
             android:name=".settings.SettingsActivity" />
