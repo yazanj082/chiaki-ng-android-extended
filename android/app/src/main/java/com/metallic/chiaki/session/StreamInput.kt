@@ -401,6 +401,26 @@ class StreamInput(val context: Context, val preferences: Preferences)
 		return true
 	}
 
+	/**
+	 * Without an input config for it, Android makes the touchpad of a DualSense/DualShock 4 a
+	 * mouse pointer. Its clicks are then the touchpad button, and its pointer is ignored.
+	 * @return whether the event came from such a touchpad
+	 */
+	fun onControllerPointerEvent(event: MotionEvent): Boolean
+	{
+		if(!event.isFromSource(InputDevice.SOURCE_MOUSE) || event.device?.vendorId != VENDOR_ID_SONY)
+			return false
+		val clicked = event.buttonState and MotionEvent.BUTTON_PRIMARY != 0
+			&& event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL
+		val buttons = if(clicked) ControllerState.BUTTON_TOUCHPAD else 0U
+		if(buttons != touchpadControllerState.buttons)
+		{
+			touchpadControllerState.buttons = buttons
+			controllerStateUpdated()
+		}
+		return true
+	}
+
 	fun onGenericMotionEvent(event: MotionEvent): Boolean
 	{
 		if(event.isFromSource(InputDevice.SOURCE_TOUCH_NAVIGATION))

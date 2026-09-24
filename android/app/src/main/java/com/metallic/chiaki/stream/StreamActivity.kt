@@ -533,8 +533,14 @@ class StreamActivity : AppCompatActivity(), View.OnSystemUiVisibilityChangeListe
 	override fun dispatchKeyEvent(event: KeyEvent) = viewModel.input.dispatchKeyEvent(event) || super.dispatchKeyEvent(event)
 	override fun onGenericMotionEvent(event: MotionEvent) = viewModel.input.onGenericMotionEvent(event) || super.onGenericMotionEvent(event)
 
+	// Clicks of a controller touchpad that Android made a mouse pointer must not reach the views
+	override fun dispatchTouchEvent(event: MotionEvent) =
+		viewModel.input.onControllerPointerEvent(event) || super.dispatchTouchEvent(event)
+
 	override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean
 	{
+		if(viewModel.input.onControllerPointerEvent(event))
+			return true
 		// Moving the mouse (e.g. in DeX) brings up the overlay, since there is no system UI swipe there
 		if(event.isFromSource(InputDevice.SOURCE_MOUSE) && event.actionMasked == MotionEvent.ACTION_HOVER_MOVE)
 		{
