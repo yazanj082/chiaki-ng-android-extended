@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.CombinedVibration
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -27,6 +28,15 @@ class ControllerRumble(private val context: Context)
 		// Effects are held until the console sends the next rumble state
 		private const val HOLD_DURATION_MS = 60000L
 		private const val PWM_PERIOD_MS = 20L
+
+		// Android 12's input system can corrupt its memory, restarting all of Android, when a
+		// controller's vibration changes while it reads the controller's input, so change it rarely.
+		private const val MIN_UPDATE_INTERVAL_MS = 100L
+		private const val LEVELS = 8
+
+		private const val PHONE_DEVICE_ID = -1
+
+		private fun quantize(amplitude: Int) = (amplitude.coerceIn(0, 255) * LEVELS + 127) / 255 * 255 / LEVELS
 	}
 
 	enum class Result
@@ -38,7 +48,15 @@ class ControllerRumble(private val context: Context)
 		CONTROLLER_CANNOT_VIBRATE
 	}
 
+	private data class Vibration(val deviceId: Int, val left: Int, val right: Int)
+
 	private val stopActions = mutableListOf<() -> Unit>()
+	private val handler = Handler(Looper.getMainLooper())
+	private var current: Vibration? = null
+	private var pending: Vibration? = null
+	private var pendingPosted = false
+	private var lastUpdateMs = 0L
+	private val applyPendingRunnable = Runnable { applyPending() }
 
 	/**
 	 * @param controllerDeviceId the controller that last sent input, or null if only touch controls are used
@@ -47,20 +65,64 @@ class ControllerRumble(private val context: Context)
 	 */
 	fun rumble(controllerDeviceId: Int?, left: Int, right: Int): Result
 	{
-		stop()
-		if(left == 0 && right == 0)
+		val quantizedLeft = quantize(left)
+		val quantizedRight = quantize(right)
+		if(quantizedLeft == 0 && quantizedRight == 0)
+		{
+			request(null)
 			return Result.OFF
+		}
 
 		val controller = controllerDeviceId?.let { InputDevice.getDevice(it) }
 		if(controller != null || anyControllerConnected())
 		{
 			val target = controller?.takeIf { hasVibrator(it) } ?: findControllerWithVibrator()
-				?: return Result.CONTROLLER_CANNOT_VIBRATE
-			rumbleController(target, left, right)
+			if(target == null)
+			{
+				request(null)
+				return Result.CONTROLLER_CANNOT_VIBRATE
+			}
+			request(Vibration(target.id, quantizedLeft, quantizedRight))
 			return Result.CONTROLLER
 		}
-		rumblePhone(left, right)
+		request(Vibration(PHONE_DEVICE_ID, quantizedLeft, quantizedRight))
 		return Result.PHONE
+	}
+
+	private fun request(vibration: Vibration?)
+	{
+		pending = vibration
+		if(pendingPosted)
+			return
+		val waitMs = lastUpdateMs + MIN_UPDATE_INTERVAL_MS - SystemClock.uptimeMillis()
+		if(waitMs <= 0)
+			applyPending()
+		else
+		{
+			pendingPosted = true
+			handler.postDelayed(applyPendingRunnable, waitMs)
+		}
+	}
+
+	private fun applyPending()
+	{
+		pendingPosted = false
+		val vibration = pending
+		if(vibration == current)
+			return
+		lastUpdateMs = SystemClock.uptimeMillis()
+		// A new vibration replaces the running one of the same device, without cancelling it first
+		if(vibration?.deviceId != current?.deviceId)
+			cancelVibration()
+		else
+			stopActions.clear()
+		current = vibration
+		if(vibration == null)
+			return
+		if(vibration.deviceId == PHONE_DEVICE_ID)
+			rumblePhone(vibration.left, vibration.right)
+		else
+			InputDevice.getDevice(vibration.deviceId)?.let { rumbleController(it, vibration.left, vibration.right) }
 	}
 
 	fun controllerName(deviceId: Int?) =
@@ -89,11 +151,20 @@ class ControllerRumble(private val context: Context)
 		stop()
 		val controllers = connectedControllers().toList()
 		controllers.filter { hasVibrator(it) }.forEach { rumbleController(it, 255, 255) }
-		Handler(Looper.getMainLooper()).postDelayed({ stop() }, durationMs)
+		handler.postDelayed({ stop() }, durationMs)
 		return controllers.map { ControllerInfo(it.name, it.vendorId, it.productId, motorCount(it)) }
 	}
 
 	fun stop()
+	{
+		handler.removeCallbacks(applyPendingRunnable)
+		pendingPosted = false
+		pending = null
+		current = null
+		cancelVibration()
+	}
+
+	private fun cancelVibration()
 	{
 		stopActions.forEach { it() }
 		stopActions.clear()
